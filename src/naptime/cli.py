@@ -1,12 +1,14 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
 import click
 import numpy as np
 import torch
-from sklearn.metrics import f1_score, precision_recall_fscore_support
+from sklearn.metrics import (
+    average_precision_score,
+    f1_score,
+    precision_recall_fscore_support,
+)
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from .baseline import (
@@ -16,6 +18,7 @@ from .baseline import (
     ConvGNPBaselineConfig,
     MALLORN_CLASS_NAMES,
     baseline_loss,
+    build_lazy_elasticc_datasets,
     build_mallorn_baseline_datasets,
     build_precomputed_baseline_datasets,
     collect_full_context_predictions,
@@ -36,23 +39,44 @@ from .baseline import (
     prepare_mallorn_baseline_test_dataset,
     save_baseline_checkpoint,
 )
-from .elasticc import CLASS_NAMES, LEGACY_META_FIELDS, META_FIELDS, NUM_ELASTICC_CLASSES, load_elasticc_focus_records
-from .elasticc import ELASTICC_REDSHIFT_SOURCES, ELASTICC_TAXONOMY_NAMES, get_elasticc_taxonomy, load_elasticc_records
+from .elasticc import (
+    CLASS_NAMES,
+    LEGACY_META_FIELDS,
+    META_FIELDS,
+    NUM_ELASTICC_CLASSES,
+    load_elasticc_focus_records,
+)
+from .elasticc import (
+    ELASTICC_REDSHIFT_SOURCES,
+    ELASTICC_TAXONOMY_NAMES,
+    extract_elasticc_object_from_ref,
+    get_elasticc_taxonomy,
+    load_elasticc_records,
+    scan_elasticc_index,
+)
 
 
-def _print_elasticc_diagnostics(train_records: list[dict], val_records: list[dict], class_names: list[str]) -> None:
+def _print_elasticc_diagnostics(
+    train_records: list[dict], val_records: list[dict], class_names: list[str]
+) -> None:
     click.echo("[diagnostics] class counts (train | val):")
     train_labels = np.array([r["target"] for r in train_records])
     val_labels = np.array([r["target"] for r in val_records])
     for c, name in enumerate(class_names):
-        click.echo(f"  class {c} ({name:10s}): {(train_labels==c).sum():7d} | {(val_labels==c).sum():6d}")
+        click.echo(
+            f"  class {c} ({name:10s}): {(train_labels==c).sum():7d} | {(val_labels==c).sum():6d}"
+        )
 
     flux_vals = np.concatenate([r["flux_raw"] for r in train_records[:2000]])
     ferr_vals = np.concatenate([r["ferr_raw"] for r in train_records[:2000]])
     nan_flux = (~np.isfinite(flux_vals)).sum()
     nan_ferr = (~np.isfinite(ferr_vals)).sum()
-    click.echo(f"[diagnostics] flux non-finite: {nan_flux} / {len(flux_vals)}  ferr non-finite: {nan_ferr} / {len(ferr_vals)}")
-    click.echo(f"[diagnostics] flux p1/p50/p99: {np.nanpercentile(flux_vals, 1):.2f} / {np.nanpercentile(flux_vals, 50):.2f} / {np.nanpercentile(flux_vals, 99):.2f}")
+    click.echo(
+        f"[diagnostics] flux non-finite: {nan_flux} / {len(flux_vals)}  ferr non-finite: {nan_ferr} / {len(ferr_vals)}"
+    )
+    click.echo(
+        f"[diagnostics] flux p1/p50/p99: {np.nanpercentile(flux_vals, 1):.2f} / {np.nanpercentile(flux_vals, 50):.2f} / {np.nanpercentile(flux_vals, 99):.2f}"
+    )
 
     meta_sample = [r for r in train_records[:2000] if len(r.get("meta_values", [])) > 0]
     if meta_sample:
@@ -63,7 +87,50 @@ def _print_elasticc_diagnostics(train_records: list[dict], val_records: list[dic
             if len(valid) == 0:
                 click.echo(f"  meta {field}: all missing")
             else:
-                click.echo(f"  meta {field:30s}: present={len(valid):5d}  min={valid.min():.3g}  max={valid.max():.3g}  median={np.median(valid):.3g}")
+                click.echo(
+                    f"  meta {field:30s}: present={len(valid):5d}  min={valid.min():.3g}  max={valid.max():.3g}  median={np.median(valid):.3g}"
+                )
+
+
+def _print_elasticc_ref_diagnostics(
+    train_refs: list[dict], val_refs: list[dict], class_names: list[str]
+) -> None:
+    click.echo("[diagnostics] class counts (train | val):")
+    train_labels = np.array([int(ref["target"]) for ref in train_refs], dtype=np.int64)
+    val_labels = np.array([int(ref["target"]) for ref in val_refs], dtype=np.int64)
+    for c, name in enumerate(class_names):
+        click.echo(
+            f"  class {c} ({name:10s}): {(train_labels==c).sum():7d} | {(val_labels==c).sum():6d}"
+        )
+
+    sample_refs = train_refs[: min(len(train_refs), 512)]
+    if not sample_refs:
+        return
+    sample_records = [extract_elasticc_object_from_ref(ref) for ref in sample_refs]
+    flux_vals = np.concatenate([r["flux_raw"] for r in sample_records])
+    ferr_vals = np.concatenate([r["ferr_raw"] for r in sample_records])
+    nan_flux = (~np.isfinite(flux_vals)).sum()
+    nan_ferr = (~np.isfinite(ferr_vals)).sum()
+    click.echo(
+        f"[diagnostics] flux non-finite: {nan_flux} / {len(flux_vals)}  ferr non-finite: {nan_ferr} / {len(ferr_vals)}"
+    )
+    click.echo(
+        f"[diagnostics] flux p1/p50/p99: {np.nanpercentile(flux_vals, 1):.2f} / {np.nanpercentile(flux_vals, 50):.2f} / {np.nanpercentile(flux_vals, 99):.2f}"
+    )
+
+    meta_sample = [r for r in sample_records if len(r.get("meta_values", [])) > 0]
+    if meta_sample:
+        all_meta = np.stack([r["meta_values"] for r in meta_sample])
+        all_mask = np.stack([r["meta_mask"] for r in meta_sample])
+        field_names = list(META_FIELDS[: all_meta.shape[1]])
+        for j, field in enumerate(field_names):
+            valid = all_meta[:, j][all_mask[:, j] > 0]
+            if len(valid) == 0:
+                click.echo(f"  meta {field}: all missing")
+            else:
+                click.echo(
+                    f"  meta {field:30s}: present={len(valid):5d}  min={valid.min():.3g}  max={valid.max():.3g}  median={np.median(valid):.3g}"
+                )
 
 
 @click.group()
@@ -187,8 +254,12 @@ def _train_single_split(
     )
 
     if num_classes == 1:
-        pos_count = float(sum(int(train_ds.data[oid]["target"]) == 1 for oid in train_ds.object_ids))
-        neg_count = float(sum(int(train_ds.data[oid]["target"]) == 0 for oid in train_ds.object_ids))
+        pos_count = float(
+            sum(int(train_ds.data[oid]["target"]) == 1 for oid in train_ds.object_ids)
+        )
+        neg_count = float(
+            sum(int(train_ds.data[oid]["target"]) == 0 for oid in train_ds.object_ids)
+        )
         _pos_weight: float | None = neg_count / max(pos_count, 1.0)
     else:
         _pos_weight = None
@@ -214,13 +285,26 @@ def _train_single_split(
         latent_hidden_dim=latent_hidden_dim,
         num_classes=num_classes,
     )
-    loss_cfg = BaselineLossConfig(lambda_recon=lambda_recon, lambda_cls=lambda_cls, pos_weight=_pos_weight, beta_kl=beta_kl, kl_warmup_epochs=kl_warmup_epochs, class_weights=class_weights)
+    loss_cfg = BaselineLossConfig(
+        lambda_recon=lambda_recon,
+        lambda_cls=lambda_cls,
+        pos_weight=_pos_weight,
+        beta_kl=beta_kl,
+        kl_warmup_epochs=kl_warmup_epochs,
+        class_weights=class_weights,
+    )
     model = ConvGNPBaseline(model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     warmup_epochs = min(10, max(1, epochs // 10))
-    warmup_sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
-    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=1e-6)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs])
+    warmup_sched = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs
+    )
+    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=1e-6
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs]
+    )
 
     best_metrics = None
     best_state = None
@@ -235,7 +319,9 @@ def _train_single_split(
             loss_cfg.beta_kl = beta_kl * min(1.0, (epoch - 1) / kl_warmup_epochs)
         train_metrics = fit_epoch(model, train_loader, optimizer, loss_cfg, device)
         if train_metrics.get("nan_batches", 0) > 0:
-            click.echo(f"  [warn] epoch {epoch}: {int(train_metrics['nan_batches'])} NaN batches skipped")
+            click.echo(
+                f"  [warn] epoch {epoch}: {int(train_metrics['nan_batches'])} NaN batches skipped"
+            )
         if full_context_eval:
             val_metrics, _ = collect_full_context_predictions(
                 model,
@@ -251,7 +337,9 @@ def _train_single_split(
         else:
             val_metrics = evaluate_epoch(model, val_loader, loss_cfg, device)
         if val_metrics.get("nan_batches", 0) > 0:
-            click.echo(f"  [warn] epoch {epoch}: {int(val_metrics['nan_batches'])} validation NaN batches skipped")
+            click.echo(
+                f"  [warn] epoch {epoch}: {int(val_metrics['nan_batches'])} validation NaN batches skipped"
+            )
         if not val_metrics:
             click.echo(f"  [warn] epoch {epoch}: no finite validation batches")
         scheduler.step()
@@ -274,7 +362,9 @@ def _train_single_split(
         improved = current < best if checkpoint_metric == "recon" else current > best
         if improved or best_metrics is None:
             best_metrics = dict(val_metrics)
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {
+                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+            }
             best_epoch = epoch
             patience_count = 0
             click.echo(f"    [best] epoch {epoch}: {checkpoint_metric}={current:.4f}")
@@ -282,7 +372,9 @@ def _train_single_split(
             patience_count += 1
             click.echo(f"    [patience] {patience_count}/{patience}")
             if patience_count >= patience:
-                click.echo(f"    [early-stop] no improvement on {checkpoint_metric} for {patience} epochs")
+                click.echo(
+                    f"    [early-stop] no improvement on {checkpoint_metric} for {patience} epochs"
+                )
                 break
 
     if best_state is not None:
@@ -291,8 +383,14 @@ def _train_single_split(
 
 
 @main.command("train-mallorn-baseline")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--epochs", type=int, default=200, show_default=True)
 @click.option("--patience", type=int, default=40, show_default=True)
@@ -315,9 +413,18 @@ def _train_single_split(
 @click.option("--conv-dropout", type=float, default=0.0, show_default=True)
 @click.option("--classifier-hidden-dim", type=int, default=128, show_default=True)
 @click.option("--decoder-hidden-dim", type=int, default=128, show_default=True)
-@click.option("--setconv-sigma", "setconv_sigmas", type=float, multiple=True, default=(0.015, 0.03, 0.06), show_default=True)
+@click.option(
+    "--setconv-sigma",
+    "setconv_sigmas",
+    type=float,
+    multiple=True,
+    default=(0.015, 0.03, 0.06),
+    show_default=True,
+)
 @click.option("--use-redshift/--no-use-redshift", default=True, show_default=True)
-@click.option("--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True)
+@click.option(
+    "--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True
+)
 @click.option("--lambda-recon", type=float, default=1.0, show_default=True)
 @click.option("--lambda-cls", type=float, default=1.0, show_default=True)
 @click.option("--beta-kl", type=float, default=1e-3, show_default=True)
@@ -326,11 +433,20 @@ def _train_single_split(
 @click.option("--latent-dim", type=int, default=8, show_default=True)
 @click.option("--latent-hidden-dim", type=int, default=64, show_default=True)
 @click.option("--num-classes", type=int, default=1, show_default=True)
-@click.option("--checkpoint-metric", type=click.Choice(["best_f1", "ap", "recon", "macro_f1", "weighted_f1", "macro_auroc"]), default="ap", show_default=True)
+@click.option(
+    "--checkpoint-metric",
+    type=click.Choice(
+        ["best_f1", "ap", "recon", "macro_f1", "weighted_f1", "macro_auroc"]
+    ),
+    default="ap",
+    show_default=True,
+)
 @click.option("--max-obs", type=int, default=200, show_default=True)
 @click.option("--keep-all-snr-gt", type=float, default=5.0, show_default=True)
 @click.option("--device", type=str, default=None)
-@click.option("--full-context-eval/--masked-context-eval", default=False, show_default=True)
+@click.option(
+    "--full-context-eval/--masked-context-eval", default=False, show_default=True
+)
 def train_mallorn_baseline(
     data_dir: Path,
     out_dir: Path,
@@ -374,9 +490,13 @@ def train_mallorn_baseline(
     full_context_eval: bool,
 ):
     if num_classes > 1 and checkpoint_metric in {"best_f1", "ap"}:
-        raise click.ClickException("--checkpoint-metric must be one of macro_f1, macro_auroc, or recon when --num-classes > 1")
+        raise click.ClickException(
+            "--checkpoint-metric must be one of macro_f1, macro_auroc, or recon when --num-classes > 1"
+        )
     if full_context_eval and checkpoint_metric == "recon":
-        raise click.ClickException("--full-context-eval cannot be combined with --checkpoint-metric recon")
+        raise click.ClickException(
+            "--full-context-eval cannot be combined with --checkpoint-metric recon"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
@@ -393,17 +513,53 @@ def train_mallorn_baseline(
         num_classes=num_classes,
     )
     z_min, z_max = compute_z_bounds(train_ds)
-    train_cfg = BaselineCollateConfig(seed=seed, z_min=z_min, z_max=z_max, mask_prob=mask_prob, mask_prob_min=mask_prob_min, mask_prob_max=mask_prob_max, min_context_points=min_context_points, min_target_points=min_target_points)
-    val_cfg = BaselineCollateConfig(seed=seed, z_min=z_min, z_max=z_max, mask_prob=mask_prob, min_context_points=min_context_points, min_target_points=min_target_points)
-    train_loader = make_baseline_loader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, training=True, cfg=train_cfg)
-    val_loader = make_baseline_loader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, training=False, cfg=val_cfg)
+    train_cfg = BaselineCollateConfig(
+        seed=seed,
+        z_min=z_min,
+        z_max=z_max,
+        mask_prob=mask_prob,
+        mask_prob_min=mask_prob_min,
+        mask_prob_max=mask_prob_max,
+        min_context_points=min_context_points,
+        min_target_points=min_target_points,
+    )
+    val_cfg = BaselineCollateConfig(
+        seed=seed,
+        z_min=z_min,
+        z_max=z_max,
+        mask_prob=mask_prob,
+        min_context_points=min_context_points,
+        min_target_points=min_target_points,
+    )
+    train_loader = make_baseline_loader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        training=True,
+        cfg=train_cfg,
+    )
+    val_loader = make_baseline_loader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        training=False,
+        cfg=val_cfg,
+    )
 
-    pos_count = float(sum(int(train_ds.data[oid]["target"]) == 1 for oid in train_ds.object_ids))
-    neg_count = float(sum(int(train_ds.data[oid]["target"]) == 0 for oid in train_ds.object_ids))
+    pos_count = float(
+        sum(int(train_ds.data[oid]["target"]) == 1 for oid in train_ds.object_ids)
+    )
+    neg_count = float(
+        sum(int(train_ds.data[oid]["target"]) == 0 for oid in train_ds.object_ids)
+    )
     pos_weight = neg_count / max(pos_count, 1.0)
     class_weights = None
     if num_classes > 1:
-        train_labels = np.array([int(train_ds.data[oid]["target"]) for oid in train_ds.object_ids])
+        train_labels = np.array(
+            [int(train_ds.data[oid]["target"]) for oid in train_ds.object_ids]
+        )
         counts = np.bincount(train_labels, minlength=num_classes).astype(float)
         counts = np.where(counts == 0, 1.0, counts)
         inv_freq = 1.0 / counts
@@ -438,9 +594,15 @@ def train_mallorn_baseline(
     model = ConvGNPBaseline(model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     warmup_epochs = min(10, max(1, epochs // 10))
-    warmup_sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
-    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=1e-6)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs])
+    warmup_sched = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs
+    )
+    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=1e-6
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs]
+    )
 
     header = (
         f"[baseline] train={len(train_ds)} val={len(val_ds)} "
@@ -454,21 +616,33 @@ def train_mallorn_baseline(
             header += " classes=" + ",".join(MALLORN_CLASS_NAMES)
     click.echo(header)
     if num_classes == 1:
-        click.echo(f"{'Ep':>4} {'train_total':>11} {'val_total':>10} {'bestF1':>8} {'AP':>8} {'recon':>8}")
+        click.echo(
+            f"{'Ep':>4} {'train_total':>11} {'val_total':>10} {'bestF1':>8} {'AP':>8} {'recon':>8}"
+        )
     else:
-        click.echo(f"{'Ep':>4} {'train_total':>11} {'val_total':>10} {'macroF1':>8} {'mAUROC':>8} {'recon':>8}")
+        click.echo(
+            f"{'Ep':>4} {'train_total':>11} {'val_total':>10} {'macroF1':>8} {'mAUROC':>8} {'recon':>8}"
+        )
     click.echo("-" * 64)
 
     history: list[dict] = []
     if num_classes == 1:
-        best_scores = {"best_f1": float("-inf"), "ap": float("-inf"), "recon": float("inf")}
+        best_scores = {
+            "best_f1": float("-inf"),
+            "ap": float("-inf"),
+            "recon": float("inf"),
+        }
         best_paths = {
             "best_f1": out_dir / "best_f1_checkpoint.pt",
             "ap": out_dir / "best_ap_checkpoint.pt",
             "recon": out_dir / "best_recon_checkpoint.pt",
         }
     else:
-        best_scores = {"macro_f1": float("-inf"), "macro_auroc": float("-inf"), "recon": float("inf")}
+        best_scores = {
+            "macro_f1": float("-inf"),
+            "macro_auroc": float("-inf"),
+            "recon": float("inf"),
+        }
         best_paths = {
             "macro_f1": out_dir / "best_macro_f1_checkpoint.pt",
             "macro_auroc": out_dir / "best_macro_auroc_checkpoint.pt",
@@ -496,7 +670,13 @@ def train_mallorn_baseline(
         else:
             val_metrics = evaluate_epoch(model, val_loader, loss_cfg, device)
         scheduler.step()
-        history.append({"epoch": epoch, **train_metrics, **{f"val_{k}": v for k, v in val_metrics.items()}})
+        history.append(
+            {
+                "epoch": epoch,
+                **train_metrics,
+                **{f"val_{k}": v for k, v in val_metrics.items()},
+            }
+        )
 
         improved = []
         if num_classes == 1:
@@ -510,7 +690,10 @@ def train_mallorn_baseline(
             if val_metrics.get("macro_f1", float("-inf")) > best_scores["macro_f1"]:
                 best_scores["macro_f1"] = val_metrics["macro_f1"]
                 improved.append("macro_f1")
-            if val_metrics.get("macro_auroc", float("-inf")) > best_scores["macro_auroc"]:
+            if (
+                val_metrics.get("macro_auroc", float("-inf"))
+                > best_scores["macro_auroc"]
+            ):
                 best_scores["macro_auroc"] = val_metrics["macro_auroc"]
                 improved.append("macro_auroc")
         if val_metrics.get("recon", float("inf")) < best_scores["recon"]:
@@ -552,7 +735,9 @@ def train_mallorn_baseline(
         else:
             patience_count += 1
             if patience_count >= patience:
-                click.echo(f"[early stop] No improvement for {patience} epochs on {checkpoint_metric}.")
+                click.echo(
+                    f"[early stop] No improvement for {patience} epochs on {checkpoint_metric}."
+                )
                 break
 
         _save_json(out_dir / "training_log.json", history)
@@ -572,8 +757,14 @@ def train_mallorn_baseline(
 
 
 @main.command("train-elasticc-focus-baseline")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--epochs", type=int, default=120, show_default=True)
 @click.option("--patience", type=int, default=25, show_default=True)
@@ -596,9 +787,18 @@ def train_mallorn_baseline(
 @click.option("--conv-dropout", type=float, default=0.0, show_default=True)
 @click.option("--classifier-hidden-dim", type=int, default=128, show_default=True)
 @click.option("--decoder-hidden-dim", type=int, default=128, show_default=True)
-@click.option("--setconv-sigma", "setconv_sigmas", type=float, multiple=True, default=(0.015, 0.03, 0.06), show_default=True)
+@click.option(
+    "--setconv-sigma",
+    "setconv_sigmas",
+    type=float,
+    multiple=True,
+    default=(0.015, 0.03, 0.06),
+    show_default=True,
+)
 @click.option("--use-redshift/--no-use-redshift", default=True, show_default=True)
-@click.option("--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True)
+@click.option(
+    "--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True
+)
 @click.option("--use-metadata/--no-use-metadata", default=True, show_default=True)
 @click.option("--metadata-hidden-dim", type=int, default=64, show_default=True)
 @click.option("--metadata-embed-dim", type=int, default=32, show_default=True)
@@ -610,12 +810,30 @@ def train_mallorn_baseline(
 @click.option("--latent-dim", type=int, default=8, show_default=True)
 @click.option("--latent-hidden-dim", type=int, default=64, show_default=True)
 @click.option("--num-classes", type=int, default=7, show_default=True)
-@click.option("--checkpoint-metric", type=click.Choice(["best_f1", "ap", "recon", "macro_f1", "weighted_f1", "macro_auroc"]), default="macro_f1", show_default=True)
-@click.option("--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default="focused", show_default=True)
-@click.option("--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default="photoz", show_default=True)
+@click.option(
+    "--checkpoint-metric",
+    type=click.Choice(
+        ["best_f1", "ap", "recon", "macro_f1", "weighted_f1", "macro_auroc"]
+    ),
+    default="macro_f1",
+    show_default=True,
+)
+@click.option(
+    "--elasticc-taxonomy",
+    type=click.Choice(ELASTICC_TAXONOMY_NAMES),
+    default="focused",
+    show_default=True,
+)
+@click.option(
+    "--redshift-source",
+    type=click.Choice(ELASTICC_REDSHIFT_SOURCES),
+    default="photoz",
+    show_default=True,
+)
 @click.option("--max-release-dirs", type=int, default=None)
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
+@click.option("--lazy-elasticc/--eager-elasticc", default=False, show_default=True)
 @click.option("--device", type=str, default=None)
 def train_elasticc_focus_baseline(
     data_dir: Path,
@@ -662,6 +880,7 @@ def train_elasticc_focus_baseline(
     max_release_dirs: int | None,
     max_shards_per_release: int | None,
     max_objects_per_release: int | None,
+    lazy_elasticc: bool,
     device: str | None,
 ):
     taxonomy_name, class_names, _ = get_elasticc_taxonomy(elasticc_taxonomy)
@@ -675,27 +894,72 @@ def train_elasticc_focus_baseline(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    records, class_names, taxonomy_name = load_elasticc_records(
-        data_dir,
-        taxonomy=elasticc_taxonomy,
-        redshift_source=redshift_source,
-        max_release_dirs=max_release_dirs,
-        max_shards_per_release=max_shards_per_release,
-        max_objects_per_release=max_objects_per_release,
-    )
-    if not records:
-        raise click.ClickException("No ELAsTiCC focus records were loaded.")
-    all_labels = [int(r["target"]) for r in records]
-    train_idx, val_idx = train_test_split(np.arange(len(records)), test_size=val_frac, stratify=all_labels, random_state=seed)
-    train_records = [records[int(i)] for i in train_idx]
-    val_records = [records[int(i)] for i in val_idx]
-    train_ds, val_ds = build_precomputed_baseline_datasets(train_records=train_records, val_records=val_records, use_rest_frame_time=use_rest_frame_time)
-    _print_elasticc_diagnostics(train_records, val_records, class_names)
+    if lazy_elasticc:
+        refs, class_names, taxonomy_name = scan_elasticc_index(
+            data_dir,
+            taxonomy=elasticc_taxonomy,
+            redshift_source=redshift_source,
+            max_release_dirs=max_release_dirs,
+            max_shards_per_release=max_shards_per_release,
+            max_objects_per_release=max_objects_per_release,
+        )
+        if not refs:
+            raise click.ClickException("No ELAsTiCC focus records were indexed.")
+        all_labels = [int(ref["target"]) for ref in refs]
+        train_idx, val_idx = train_test_split(
+            np.arange(len(refs)),
+            test_size=val_frac,
+            stratify=all_labels,
+            random_state=seed,
+        )
+        train_refs = [refs[int(i)] for i in train_idx]
+        val_refs = [refs[int(i)] for i in val_idx]
+        train_ds, val_ds = build_lazy_elasticc_datasets(
+            train_refs=train_refs,
+            val_refs=val_refs,
+            use_rest_frame_time=use_rest_frame_time,
+        )
+        _print_elasticc_ref_diagnostics(train_refs, val_refs, class_names)
+    else:
+        records, class_names, taxonomy_name = load_elasticc_records(
+            data_dir,
+            taxonomy=elasticc_taxonomy,
+            redshift_source=redshift_source,
+            max_release_dirs=max_release_dirs,
+            max_shards_per_release=max_shards_per_release,
+            max_objects_per_release=max_objects_per_release,
+        )
+        if not records:
+            raise click.ClickException("No ELAsTiCC focus records were loaded.")
+        all_labels = [int(r["target"]) for r in records]
+        train_idx, val_idx = train_test_split(
+            np.arange(len(records)),
+            test_size=val_frac,
+            stratify=all_labels,
+            random_state=seed,
+        )
+        train_records = [records[int(i)] for i in train_idx]
+        val_records = [records[int(i)] for i in val_idx]
+        train_ds, val_ds = build_precomputed_baseline_datasets(
+            train_records=train_records,
+            val_records=val_records,
+            use_rest_frame_time=use_rest_frame_time,
+        )
+        _print_elasticc_diagnostics(train_records, val_records, class_names)
 
     # Compute inverse-frequency class weights for multi-class
     _class_weights: tuple[float, ...] | None = None
     if num_classes > 1:
-        train_labels = np.array([int(train_ds.data[oid]["target"]) for oid in train_ds.object_ids])
+        if hasattr(train_ds, "target_by_oid"):
+            train_labels = np.array(
+                [int(train_ds.target_by_oid[oid]) for oid in train_ds.object_ids],
+                dtype=np.int64,
+            )
+        else:
+            train_labels = np.array(
+                [int(train_ds.data[oid]["target"]) for oid in train_ds.object_ids],
+                dtype=np.int64,
+            )
         counts = np.bincount(train_labels, minlength=num_classes).astype(float)
         counts = np.where(counts == 0, 1.0, counts)
         inv_freq = 1.0 / counts
@@ -796,8 +1060,14 @@ def train_elasticc_focus_baseline(
 
 
 @main.command("crossval-mallorn-baseline")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--folds", type=int, default=5, show_default=True)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--epochs", type=int, default=120, show_default=True)
@@ -820,9 +1090,18 @@ def train_elasticc_focus_baseline(
 @click.option("--conv-dropout", type=float, default=0.0, show_default=True)
 @click.option("--classifier-hidden-dim", type=int, default=128, show_default=True)
 @click.option("--decoder-hidden-dim", type=int, default=128, show_default=True)
-@click.option("--setconv-sigma", "setconv_sigmas", type=float, multiple=True, default=(0.015, 0.03, 0.06), show_default=True)
+@click.option(
+    "--setconv-sigma",
+    "setconv_sigmas",
+    type=float,
+    multiple=True,
+    default=(0.015, 0.03, 0.06),
+    show_default=True,
+)
 @click.option("--use-redshift/--no-use-redshift", default=True, show_default=True)
-@click.option("--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True)
+@click.option(
+    "--use-rest-frame-time/--no-use-rest-frame-time", default=False, show_default=True
+)
 @click.option("--lambda-recon", type=float, default=1.0, show_default=True)
 @click.option("--lambda-cls", type=float, default=1.0, show_default=True)
 @click.option("--beta-kl", type=float, default=1e-3, show_default=True)
@@ -830,11 +1109,18 @@ def train_elasticc_focus_baseline(
 @click.option("--use-latent/--no-latent", default=True, show_default=True)
 @click.option("--latent-dim", type=int, default=8, show_default=True)
 @click.option("--latent-hidden-dim", type=int, default=64, show_default=True)
-@click.option("--checkpoint-metric", type=click.Choice(["best_f1", "ap", "recon"]), default="ap", show_default=True)
+@click.option(
+    "--checkpoint-metric",
+    type=click.Choice(["best_f1", "ap", "recon"]),
+    default="ap",
+    show_default=True,
+)
 @click.option("--max-obs", type=int, default=200, show_default=True)
 @click.option("--keep-all-snr-gt", type=float, default=5.0, show_default=True)
 @click.option("--device", type=str, default=None)
-@click.option("--full-context-eval/--masked-context-eval", default=False, show_default=True)
+@click.option(
+    "--full-context-eval/--masked-context-eval", default=False, show_default=True
+)
 def crossval_mallorn_baseline(
     data_dir: Path,
     out_dir: Path,
@@ -877,14 +1163,18 @@ def crossval_mallorn_baseline(
     full_context_eval: bool,
 ):
     if full_context_eval and checkpoint_metric == "recon":
-        raise click.ClickException("--full-context-eval cannot be combined with --checkpoint-metric recon")
+        raise click.ClickException(
+            "--full-context-eval cannot be combined with --checkpoint-metric recon"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    lc, log = load_mallorn_training_tables(data_dir, max_obs=max_obs, keep_all_snr_gt=keep_all_snr_gt)
+    lc, log = load_mallorn_training_tables(
+        data_dir, max_obs=max_obs, keep_all_snr_gt=keep_all_snr_gt
+    )
     all_ids = log["object_id"].tolist()
     all_tgts = np.asarray(log["target"].tolist(), dtype=int)
     skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
@@ -892,51 +1182,61 @@ def crossval_mallorn_baseline(
 
     fold_rows: list[dict] = []
     oof_rows: list[dict] = []
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(all_ids, all_tgts), start=1):
+    for fold_idx, (train_idx, val_idx) in enumerate(
+        skf.split(all_ids, all_tgts), start=1
+    ):
         torch.manual_seed(seed + fold_idx)
         train_ids = [all_ids[i] for i in train_idx]
         val_ids = [all_ids[i] for i in val_idx]
-        train_ds, val_ds = build_mallorn_baseline_datasets(lc, log, train_ids=train_ids, val_ids=val_ids, use_rest_frame_time=use_rest_frame_time)
-        model, model_cfg, loss_cfg, metrics, best_epoch, z_min, z_max = _train_single_split(
-            train_ds=train_ds,
-            val_ds=val_ds,
-            seed=seed + fold_idx,
-            batch_size=batch_size,
-            epochs=epochs,
-            patience=patience,
-            lr=lr,
-            weight_decay=weight_decay,
-            num_workers=num_workers,
-            mask_prob=mask_prob,
-            mask_prob_min=mask_prob_min,
-            mask_prob_max=mask_prob_max,
-            min_context_points=min_context_points,
-            min_target_points=min_target_points,
-            grid_size=grid_size,
-            band_emb_dim=band_emb_dim,
-            time_fourier_dim=time_fourier_dim,
-            point_feat_dim=point_feat_dim,
-            grid_feat_dim=grid_feat_dim,
-            conv_layers=conv_layers,
-            conv_dropout=conv_dropout,
-            classifier_hidden_dim=classifier_hidden_dim,
-            decoder_hidden_dim=decoder_hidden_dim,
-            setconv_sigmas=setconv_sigmas,
-            use_redshift=use_redshift,
+        train_ds, val_ds = build_mallorn_baseline_datasets(
+            lc,
+            log,
+            train_ids=train_ids,
+            val_ids=val_ids,
             use_rest_frame_time=use_rest_frame_time,
-            use_metadata=False,
-            metadata_hidden_dim=64,
-            metadata_embed_dim=32,
-            lambda_recon=lambda_recon,
-            lambda_cls=lambda_cls,
-            beta_kl=beta_kl,
-            kl_warmup_epochs=kl_warmup_epochs,
-            use_latent=use_latent,
-            latent_dim=latent_dim,
-            latent_hidden_dim=latent_hidden_dim,
-            checkpoint_metric=checkpoint_metric,
-            device=device,
-            full_context_eval=full_context_eval,
+        )
+        model, model_cfg, loss_cfg, metrics, best_epoch, z_min, z_max = (
+            _train_single_split(
+                train_ds=train_ds,
+                val_ds=val_ds,
+                seed=seed + fold_idx,
+                batch_size=batch_size,
+                epochs=epochs,
+                patience=patience,
+                lr=lr,
+                weight_decay=weight_decay,
+                num_workers=num_workers,
+                mask_prob=mask_prob,
+                mask_prob_min=mask_prob_min,
+                mask_prob_max=mask_prob_max,
+                min_context_points=min_context_points,
+                min_target_points=min_target_points,
+                grid_size=grid_size,
+                band_emb_dim=band_emb_dim,
+                time_fourier_dim=time_fourier_dim,
+                point_feat_dim=point_feat_dim,
+                grid_feat_dim=grid_feat_dim,
+                conv_layers=conv_layers,
+                conv_dropout=conv_dropout,
+                classifier_hidden_dim=classifier_hidden_dim,
+                decoder_hidden_dim=decoder_hidden_dim,
+                setconv_sigmas=setconv_sigmas,
+                use_redshift=use_redshift,
+                use_rest_frame_time=use_rest_frame_time,
+                use_metadata=False,
+                metadata_hidden_dim=64,
+                metadata_embed_dim=32,
+                lambda_recon=lambda_recon,
+                lambda_cls=lambda_cls,
+                beta_kl=beta_kl,
+                kl_warmup_epochs=kl_warmup_epochs,
+                use_latent=use_latent,
+                latent_dim=latent_dim,
+                latent_hidden_dim=latent_hidden_dim,
+                checkpoint_metric=checkpoint_metric,
+                device=device,
+                full_context_eval=full_context_eval,
+            )
         )
         fold_rows.append({"fold": fold_idx, "best_epoch": best_epoch, **metrics})
         click.echo(
@@ -969,7 +1269,9 @@ def crossval_mallorn_baseline(
                 training=False,
                 cfg=val_cfg,
             )
-            _, val_probs = collect_epoch_predictions(model, val_loader, loss_cfg, device)
+            _, val_probs = collect_epoch_predictions(
+                model, val_loader, loss_cfg, device
+            )
         threshold = float(metrics.get("best_threshold", 0.5))
         for row in val_probs:
             prob = float(row["prob_tde"])
@@ -1019,9 +1321,13 @@ def crossval_mallorn_baseline(
         "oof_best_f1_global_threshold": best_f1,
         "oof_best_threshold_global": best_threshold,
         "oof_f1_using_fold_thresholds": oof_f1_fold,
-        "mean_fold_best_f1": float(np.mean([row.get("best_f1", np.nan) for row in fold_rows])),
+        "mean_fold_best_f1": float(
+            np.mean([row.get("best_f1", np.nan) for row in fold_rows])
+        ),
         "mean_fold_ap": float(np.mean([row.get("ap", np.nan) for row in fold_rows])),
-        "mean_fold_recon": float(np.mean([row.get("recon", np.nan) for row in fold_rows])),
+        "mean_fold_recon": float(
+            np.mean([row.get("recon", np.nan) for row in fold_rows])
+        ),
     }
     click.echo(
         f"[crossval] oof_ap={summary['oof_ap']:.4f} "
@@ -1036,8 +1342,16 @@ def crossval_mallorn_baseline(
 
 
 @main.command("evaluate-mallorn-baseline")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--checkpoint", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--num-workers", type=int, default=0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
@@ -1050,9 +1364,15 @@ def crossval_mallorn_baseline(
 @click.option("--max-obs", type=int, default=200, show_default=True)
 @click.option("--keep-all-snr-gt", type=float, default=5.0, show_default=True)
 @click.option("--device", type=str, default=None)
-@click.option("--out-json", type=click.Path(dir_okay=False, path_type=Path), default=None)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), default=None)
-@click.option("--full-context-eval/--masked-context-eval", default=False, show_default=True)
+@click.option(
+    "--out-json", type=click.Path(dir_okay=False, path_type=Path), default=None
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), default=None
+)
+@click.option(
+    "--full-context-eval/--masked-context-eval", default=False, show_default=True
+)
 def evaluate_mallorn_baseline(
     data_dir: Path,
     checkpoint: Path,
@@ -1074,7 +1394,9 @@ def evaluate_mallorn_baseline(
 ):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, ckpt = load_baseline_checkpoint(checkpoint, device=device)
-    use_rest_frame_time = bool(ckpt.get("model_cfg", {}).get("use_rest_frame_time", False))
+    use_rest_frame_time = bool(
+        ckpt.get("model_cfg", {}).get("use_rest_frame_time", False)
+    )
     num_classes = int(ckpt.get("model_cfg", {}).get("num_classes", 1))
     _, _, train_ds, val_ds, _, _ = prepare_mallorn_baseline_datasets(
         data_dir,
@@ -1142,8 +1464,20 @@ def evaluate_mallorn_baseline(
         pred_df = pd.DataFrame(rows)
         prob_cols = [f"prob_class_{i}" for i in range(num_classes)]
         pred_df["pred_class"] = pred_df[prob_cols].to_numpy().argmax(axis=1)
-        pred_df["true_class_name"] = pred_df["target"].map(lambda x: MALLORN_CLASS_NAMES[int(x)] if int(x) < len(MALLORN_CLASS_NAMES) else str(int(x)))
-        pred_df["pred_class_name"] = pred_df["pred_class"].map(lambda x: MALLORN_CLASS_NAMES[int(x)] if int(x) < len(MALLORN_CLASS_NAMES) else str(int(x)))
+        pred_df["true_class_name"] = pred_df["target"].map(
+            lambda x: (
+                MALLORN_CLASS_NAMES[int(x)]
+                if int(x) < len(MALLORN_CLASS_NAMES)
+                else str(int(x))
+            )
+        )
+        pred_df["pred_class_name"] = pred_df["pred_class"].map(
+            lambda x: (
+                MALLORN_CLASS_NAMES[int(x)]
+                if int(x) < len(MALLORN_CLASS_NAMES)
+                else str(int(x))
+            )
+        )
 
         y_true = pred_df["target"].to_numpy(dtype=int)
         y_pred = pred_df["pred_class"].to_numpy(dtype=int)
@@ -1166,9 +1500,19 @@ def evaluate_mallorn_baseline(
 
 
 @main.command("evaluate-elasticc-focus-baseline")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--checkpoint", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--num-workers", type=int, default=0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
@@ -1178,13 +1522,19 @@ def evaluate_mallorn_baseline(
 @click.option("--mask-prob-max", type=float, default=0.8, show_default=True)
 @click.option("--min-context-points", type=int, default=3, show_default=True)
 @click.option("--min-target-points", type=int, default=1, show_default=True)
-@click.option("--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None)
-@click.option("--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None)
+@click.option(
+    "--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None
+)
+@click.option(
+    "--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None
+)
 @click.option("--max-release-dirs", type=int, default=None)
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
 @click.option("--device", type=str, default=None)
-@click.option("--full-context-eval/--masked-context-eval", default=False, show_default=True)
+@click.option(
+    "--full-context-eval/--masked-context-eval", default=False, show_default=True
+)
 def evaluate_elasticc_focus_baseline(
     data_dir: Path,
     checkpoint: Path,
@@ -1215,8 +1565,12 @@ def evaluate_elasticc_focus_baseline(
     num_classes = int(model_cfg.get("num_classes", 1))
     use_rest_frame_time = bool(model_cfg.get("use_rest_frame_time", False))
     taxonomy_name = str(ckpt.get("elasticc_taxonomy") or elasticc_taxonomy or "focused")
-    ckpt_redshift_source = str(ckpt.get("elasticc_redshift_source") or redshift_source or "final")
-    ckpt_metadata_fields = list(ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS)
+    ckpt_redshift_source = str(
+        ckpt.get("elasticc_redshift_source") or redshift_source or "final"
+    )
+    ckpt_metadata_fields = list(
+        ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS
+    )
     _, class_names, _ = get_elasticc_taxonomy(taxonomy_name)
     if elasticc_taxonomy is not None and elasticc_taxonomy != taxonomy_name:
         raise click.ClickException(
@@ -1239,7 +1593,12 @@ def evaluate_elasticc_focus_baseline(
     if not records:
         raise click.ClickException("No ELAsTiCC focus records were loaded.")
     all_labels = [int(r["target"]) for r in records]
-    train_idx, val_idx = train_test_split(np.arange(len(records)), test_size=val_frac, stratify=all_labels, random_state=seed)
+    train_idx, val_idx = train_test_split(
+        np.arange(len(records)),
+        test_size=val_frac,
+        stratify=all_labels,
+        random_state=seed,
+    )
     train_records = [records[int(i)] for i in train_idx]
     val_records = [records[int(i)] for i in val_idx]
     train_ds, val_ds = build_precomputed_baseline_datasets(
@@ -1288,10 +1647,14 @@ def evaluate_elasticc_focus_baseline(
 
     pred_df = pd.DataFrame(rows)
     if pred_df.empty:
-        raise click.ClickException("No predictions were collected from the validation split.")
+        raise click.ClickException(
+            "No predictions were collected from the validation split."
+        )
 
     if num_classes == 1:
-        raise click.ClickException("evaluate-elasticc-focus-baseline expects a multiclass ELAsTiCC checkpoint.")
+        raise click.ClickException(
+            "evaluate-elasticc-focus-baseline expects a multiclass ELAsTiCC checkpoint."
+        )
     if num_classes < len(class_names):
         raise click.ClickException(
             f"checkpoint num_classes={num_classes} is smaller than taxonomy size {len(class_names)} for {taxonomy_name}"
@@ -1299,8 +1662,12 @@ def evaluate_elasticc_focus_baseline(
 
     prob_cols = [f"prob_class_{i}" for i in range(num_classes)]
     pred_df["pred_class"] = pred_df[prob_cols].to_numpy().argmax(axis=1)
-    pred_df["true_class_name"] = pred_df["target"].map(lambda x: class_names[int(x)] if int(x) < len(class_names) else str(int(x)))
-    pred_df["pred_class_name"] = pred_df["pred_class"].map(lambda x: class_names[int(x)] if int(x) < len(class_names) else str(int(x)))
+    pred_df["true_class_name"] = pred_df["target"].map(
+        lambda x: class_names[int(x)] if int(x) < len(class_names) else str(int(x))
+    )
+    pred_df["pred_class_name"] = pred_df["pred_class"].map(
+        lambda x: class_names[int(x)] if int(x) < len(class_names) else str(int(x))
+    )
 
     y_true = pred_df["target"].to_numpy(dtype=int)
     y_pred = pred_df["pred_class"].to_numpy(dtype=int)
@@ -1324,18 +1691,39 @@ def evaluate_elasticc_focus_baseline(
 
 
 @main.command("evaluate-elasticc-focus-context-sweep")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--checkpoint", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--num-workers", type=int, default=0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
 @click.option("--val-frac", type=float, default=0.15, show_default=True)
 @click.option("--min-context-points", type=int, default=3, show_default=True)
 @click.option("--min-target-points", type=int, default=1, show_default=True)
-@click.option("--context-fraction", "context_fractions", type=float, multiple=True, default=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0), show_default=True)
-@click.option("--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None)
-@click.option("--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None)
+@click.option(
+    "--context-fraction",
+    "context_fractions",
+    type=float,
+    multiple=True,
+    default=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0),
+    show_default=True,
+)
+@click.option(
+    "--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None
+)
+@click.option(
+    "--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None
+)
 @click.option("--max-release-dirs", type=int, default=None)
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
@@ -1367,10 +1755,16 @@ def evaluate_elasticc_focus_context_sweep(
     num_classes = int(model_cfg.get("num_classes", 1))
     use_rest_frame_time = bool(model_cfg.get("use_rest_frame_time", False))
     taxonomy_name = str(ckpt.get("elasticc_taxonomy") or elasticc_taxonomy or "focused")
-    ckpt_redshift_source = str(ckpt.get("elasticc_redshift_source") or redshift_source or "final")
-    ckpt_metadata_fields = list(ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS)
+    ckpt_redshift_source = str(
+        ckpt.get("elasticc_redshift_source") or redshift_source or "final"
+    )
+    ckpt_metadata_fields = list(
+        ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS
+    )
     if num_classes == 1:
-        raise click.ClickException("evaluate-elasticc-focus-context-sweep expects a multiclass ELAsTiCC checkpoint.")
+        raise click.ClickException(
+            "evaluate-elasticc-focus-context-sweep expects a multiclass ELAsTiCC checkpoint."
+        )
     if elasticc_taxonomy is not None and elasticc_taxonomy != taxonomy_name:
         raise click.ClickException(
             f"checkpoint taxonomy is {taxonomy_name}, but --elasticc-taxonomy {elasticc_taxonomy} was requested"
@@ -1392,7 +1786,12 @@ def evaluate_elasticc_focus_context_sweep(
     if not records:
         raise click.ClickException("No ELAsTiCC focus records were loaded.")
     all_labels = [int(r["target"]) for r in records]
-    train_idx, val_idx = train_test_split(np.arange(len(records)), test_size=val_frac, stratify=all_labels, random_state=seed)
+    train_idx, val_idx = train_test_split(
+        np.arange(len(records)),
+        test_size=val_frac,
+        stratify=all_labels,
+        random_state=seed,
+    )
     train_records = [records[int(i)] for i in train_idx]
     val_records = [records[int(i)] for i in val_idx]
     _, val_ds = build_precomputed_baseline_datasets(
@@ -1408,7 +1807,9 @@ def evaluate_elasticc_focus_context_sweep(
     for frac in context_fractions:
         frac = float(frac)
         if frac <= 0.0 or frac > 1.0:
-            raise click.ClickException(f"context_fraction must be in (0, 1], got {frac}")
+            raise click.ClickException(
+                f"context_fraction must be in (0, 1], got {frac}"
+            )
         if np.isclose(frac, 1.0):
             metrics, _ = collect_full_context_predictions(
                 model,
@@ -1464,18 +1865,39 @@ def evaluate_elasticc_focus_context_sweep(
 
 
 @main.command("evaluate-elasticc-focus-prefix-sweep")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--checkpoint", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-dir", type=click.Path(file_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--num-workers", type=int, default=0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
 @click.option("--val-frac", type=float, default=0.15, show_default=True)
 @click.option("--min-context-points", type=int, default=3, show_default=True)
 @click.option("--min-target-points", type=int, default=1, show_default=True)
-@click.option("--context-fraction", "context_fractions", type=float, multiple=True, default=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0), show_default=True)
-@click.option("--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None)
-@click.option("--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None)
+@click.option(
+    "--context-fraction",
+    "context_fractions",
+    type=float,
+    multiple=True,
+    default=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0),
+    show_default=True,
+)
+@click.option(
+    "--elasticc-taxonomy", type=click.Choice(ELASTICC_TAXONOMY_NAMES), default=None
+)
+@click.option(
+    "--redshift-source", type=click.Choice(ELASTICC_REDSHIFT_SOURCES), default=None
+)
 @click.option("--max-release-dirs", type=int, default=None)
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
@@ -1507,10 +1929,16 @@ def evaluate_elasticc_focus_prefix_sweep(
     num_classes = int(model_cfg.get("num_classes", 1))
     use_rest_frame_time = bool(model_cfg.get("use_rest_frame_time", False))
     taxonomy_name = str(ckpt.get("elasticc_taxonomy") or elasticc_taxonomy or "focused")
-    ckpt_redshift_source = str(ckpt.get("elasticc_redshift_source") or redshift_source or "final")
-    ckpt_metadata_fields = list(ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS)
+    ckpt_redshift_source = str(
+        ckpt.get("elasticc_redshift_source") or redshift_source or "final"
+    )
+    ckpt_metadata_fields = list(
+        ckpt.get("elasticc_metadata_fields") or LEGACY_META_FIELDS
+    )
     if num_classes == 1:
-        raise click.ClickException("evaluate-elasticc-focus-prefix-sweep expects a multiclass ELAsTiCC checkpoint.")
+        raise click.ClickException(
+            "evaluate-elasticc-focus-prefix-sweep expects a multiclass ELAsTiCC checkpoint."
+        )
     if elasticc_taxonomy is not None and elasticc_taxonomy != taxonomy_name:
         raise click.ClickException(
             f"checkpoint taxonomy is {taxonomy_name}, but --elasticc-taxonomy {elasticc_taxonomy} was requested"
@@ -1532,7 +1960,12 @@ def evaluate_elasticc_focus_prefix_sweep(
     if not records:
         raise click.ClickException("No ELAsTiCC focus records were loaded.")
     all_labels = [int(r["target"]) for r in records]
-    train_idx, val_idx = train_test_split(np.arange(len(records)), test_size=val_frac, stratify=all_labels, random_state=seed)
+    train_idx, val_idx = train_test_split(
+        np.arange(len(records)),
+        test_size=val_frac,
+        stratify=all_labels,
+        random_state=seed,
+    )
     train_records = [records[int(i)] for i in train_idx]
     val_records = [records[int(i)] for i in val_idx]
     _, val_ds = build_precomputed_baseline_datasets(
@@ -1550,7 +1983,9 @@ def evaluate_elasticc_focus_prefix_sweep(
     for frac in context_fractions:
         frac = float(frac)
         if frac <= 0.0 or frac > 1.0:
-            raise click.ClickException(f"context_fraction must be in (0, 1], got {frac}")
+            raise click.ClickException(
+                f"context_fraction must be in (0, 1], got {frac}"
+            )
 
         if np.isclose(frac, 1.0):
             metrics, _ = collect_full_context_predictions(
@@ -1632,9 +2067,19 @@ def evaluate_elasticc_focus_prefix_sweep(
 
 
 @main.command("predict-mallorn-baseline-test")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--checkpoint", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--out-csv", type=click.Path(dir_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-csv", type=click.Path(dir_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--max-obs", type=int, default=200, show_default=True)
 @click.option("--keep-all-snr-gt", type=float, default=5.0, show_default=True)
@@ -1660,9 +2105,13 @@ def predict_mallorn_baseline_test(
         flux_scale_by_band=flux_scale_by_band,
         max_obs=max_obs,
         keep_all_snr_gt=keep_all_snr_gt,
-        use_rest_frame_time=bool(ckpt.get("model_cfg", {}).get("use_rest_frame_time", False)),
+        use_rest_frame_time=bool(
+            ckpt.get("model_cfg", {}).get("use_rest_frame_time", False)
+        ),
     )
-    rows = predict_full_context(model, test_ds, batch_size=batch_size, z_min=z_min, z_max=z_max, device=device)
+    rows = predict_full_context(
+        model, test_ds, batch_size=batch_size, z_min=z_min, z_max=z_max, device=device
+    )
     threshold = ckpt.get("metrics", {}).get("best_threshold", 0.5)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     import pandas as pd
@@ -1674,9 +2123,19 @@ def predict_mallorn_baseline_test(
 
 
 @main.command("predict-mallorn-baseline-test-ensemble")
-@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--cv-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--out-csv", type=click.Path(dir_okay=False, path_type=Path), required=True)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--cv-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--out-csv", type=click.Path(dir_okay=False, path_type=Path), required=True
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @click.option("--max-obs", type=int, default=200, show_default=True)
 @click.option("--keep-all-snr-gt", type=float, default=5.0, show_default=True)
@@ -1712,7 +2171,9 @@ def predict_mallorn_baseline_test_ensemble(
         flux_scale_by_band = ckpt["flux_scale_by_band"]
         z_min = float(ckpt["z_min"])
         z_max = float(ckpt["z_max"])
-        use_rest_frame_time = bool(ckpt.get("model_cfg", {}).get("use_rest_frame_time", False))
+        use_rest_frame_time = bool(
+            ckpt.get("model_cfg", {}).get("use_rest_frame_time", False)
+        )
         _, _, test_ds, _ = prepare_mallorn_baseline_test_dataset(
             data_dir,
             flux_center_by_band=flux_center_by_band,
@@ -1721,15 +2182,29 @@ def predict_mallorn_baseline_test_ensemble(
             keep_all_snr_gt=keep_all_snr_gt,
             use_rest_frame_time=use_rest_frame_time,
         )
-        rows = predict_full_context(model, test_ds, batch_size=batch_size, z_min=z_min, z_max=z_max, device=device)
+        rows = predict_full_context(
+            model,
+            test_ds,
+            batch_size=batch_size,
+            z_min=z_min,
+            z_max=z_max,
+            device=device,
+        )
         if ensemble_rows is None:
-            ensemble_rows = [{"object_id": str(row["object_id"]), "prob_tde": float(row["prob_tde"])} for row in rows]
+            ensemble_rows = [
+                {"object_id": str(row["object_id"]), "prob_tde": float(row["prob_tde"])}
+                for row in rows
+            ]
         else:
             if len(rows) != len(ensemble_rows):
-                raise click.ClickException(f"Fold {fold_path.name} produced {len(rows)} rows, expected {len(ensemble_rows)}")
+                raise click.ClickException(
+                    f"Fold {fold_path.name} produced {len(rows)} rows, expected {len(ensemble_rows)}"
+                )
             for acc, row in zip(ensemble_rows, rows):
                 if str(acc["object_id"]) != str(row["object_id"]):
-                    raise click.ClickException(f"Object order mismatch in {fold_path.name}")
+                    raise click.ClickException(
+                        f"Object order mismatch in {fold_path.name}"
+                    )
                 acc["prob_tde"] += float(row["prob_tde"])
 
     assert ensemble_rows is not None
@@ -1743,4 +2218,6 @@ def predict_mallorn_baseline_test_ensemble(
     df["prediction"] = (df["prob_tde"] >= float(threshold)).astype(int)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df[["object_id", "prediction"]].to_csv(out_csv, index=False)
-    click.echo(f"[done] ensemble submission -> {out_csv} folds={n_folds} threshold={float(threshold):.4f}")
+    click.echo(
+        f"[done] ensemble submission -> {out_csv} folds={n_folds} threshold={float(threshold):.4f}"
+    )

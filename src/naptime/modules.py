@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import math
 
 import torch
@@ -40,12 +38,16 @@ class ResidualConvBlock(nn.Module):
 
 
 class ConvBackbone1D(nn.Module):
-    def __init__(self, channels: int, layers: int, kernel_size: int = 5, dropout: float = 0.0):
+    def __init__(
+        self, channels: int, layers: int, kernel_size: int = 5, dropout: float = 0.0
+    ):
         super().__init__()
-        self.blocks = nn.ModuleList([
-            ResidualConvBlock(channels, kernel_size=kernel_size, dropout=dropout)
-            for _ in range(layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                ResidualConvBlock(channels, kernel_size=kernel_size, dropout=dropout)
+                for _ in range(layers)
+            ]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.blocks:
@@ -72,7 +74,9 @@ class GaussianSetConv1D(nn.Module):
         for sigma in self.sigmas:
             weights = torch.exp(-0.5 * (dx / sigma) ** 2) * point_mask.unsqueeze(-1)
             denom = weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
-            agg = torch.einsum("bng,bnc->bgc", weights, point_feat) / denom.squeeze(1).unsqueeze(-1)
+            agg = torch.einsum("bng,bnc->bgc", weights, point_feat) / denom.squeeze(
+                1
+            ).unsqueeze(-1)
             aggs.append(agg)
             densities.append(weights.sum(dim=1).unsqueeze(-1))  # (B, G, 1)
         return torch.cat(aggs, dim=-1), torch.cat(densities, dim=-1)
@@ -90,7 +94,9 @@ class GlobalLatentEncoder(nn.Module):
         self.mu = nn.Linear(hidden_dim, latent_dim)
         self.logvar = nn.Linear(hidden_dim, latent_dim)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # x: (B, N, C), mask: (B, N)
         m = mask.unsqueeze(-1)
         denom = m.sum(dim=1).clamp_min(1.0)
@@ -107,7 +113,14 @@ class GlobalLatentEncoder(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, depth: int = 2, dropout: float = 0.0):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
+        depth: int = 2,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         layers: list[nn.Module] = []
         d = in_dim

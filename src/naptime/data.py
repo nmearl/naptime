@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 import numpy as np
@@ -33,12 +31,25 @@ def load_all_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     else:
         lc_path = data_dir / "train_full_lightcurves.csv"
         if not lc_path.exists() or not log_path.exists():
-            raise FileNotFoundError(f"Cannot find Mallorn training data under {data_dir!s}")
+            raise FileNotFoundError(
+                f"Cannot find Mallorn training data under {data_dir!s}"
+            )
         lc = pd.read_csv(lc_path)
 
     log = pd.read_csv(log_path)
-    lc = lc.rename(columns={"Time (MJD)": "mjd", "Flux": "flux", "Flux_err": "flux_err", "Filter": "band"})
-    keep_cols = [col for col in ["object_id", "Z", "EBV", "target", "SpecType"] if col in log.columns]
+    lc = lc.rename(
+        columns={
+            "Time (MJD)": "mjd",
+            "Flux": "flux",
+            "Flux_err": "flux_err",
+            "Filter": "band",
+        }
+    )
+    keep_cols = [
+        col
+        for col in ["object_id", "Z", "EBV", "target", "SpecType"]
+        if col in log.columns
+    ]
     log = log[keep_cols].copy()
     if "target" in log.columns:
         log["target"] = log["target"].fillna(0).astype(int)
@@ -65,17 +76,32 @@ def load_test_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         lc = pd.read_csv(lc_path)
 
     log = pd.read_csv(log_path)
-    lc = lc.rename(columns={"Time (MJD)": "mjd", "Flux": "flux", "Flux_err": "flux_err", "Filter": "band"})
-    keep_cols = [col for col in ["object_id", "Z", "EBV", "SpecType"] if col in log.columns]
+    lc = lc.rename(
+        columns={
+            "Time (MJD)": "mjd",
+            "Flux": "flux",
+            "Flux_err": "flux_err",
+            "Filter": "band",
+        }
+    )
+    keep_cols = [
+        col for col in ["object_id", "Z", "EBV", "SpecType"] if col in log.columns
+    ]
     log = log[keep_cols].copy()
     lc = lc[lc["band"].isin(BANDS)].dropna(subset=["flux", "flux_err"])
     lc = lc[lc["flux_err"] > 0].copy()
     return lc, log
 
 
-def apply_ebv_correction(lc: pd.DataFrame, log: pd.DataFrame, ebv_coeffs: dict[str, float] | None = None) -> pd.DataFrame:
+def apply_ebv_correction(
+    lc: pd.DataFrame, log: pd.DataFrame, ebv_coeffs: dict[str, float] | None = None
+) -> pd.DataFrame:
     ebv_coeffs = EBV_COEFFS if ebv_coeffs is None else ebv_coeffs
-    ebv_map = dict(zip(log["object_id"], log["EBV"].fillna(0.0))) if "EBV" in log.columns else {}
+    ebv_map = (
+        dict(zip(log["object_id"], log["EBV"].fillna(0.0)))
+        if "EBV" in log.columns
+        else {}
+    )
     out = lc.copy()
     out["_ebv"] = out["object_id"].map(ebv_map).fillna(0.0)
     out["_coeff"] = out["band"].map(ebv_coeffs).fillna(0.0)
@@ -86,7 +112,9 @@ def apply_ebv_correction(lc: pd.DataFrame, log: pd.DataFrame, ebv_coeffs: dict[s
     return out
 
 
-def cap_observations(obj: pd.DataFrame, max_obs: int, snr_threshold: float) -> pd.DataFrame:
+def cap_observations(
+    obj: pd.DataFrame, max_obs: int, snr_threshold: float
+) -> pd.DataFrame:
     if len(obj) <= max_obs:
         return obj.sort_values("mjd").reset_index(drop=True)
 
@@ -129,7 +157,11 @@ def preprocess_mallorn_training_tables(
     if long_obj:
         parts = [lc[~lc["object_id"].isin(long_obj)]]
         for oid in long_obj:
-            parts.append(cap_observations(lc[lc["object_id"] == oid].copy(), max_obs, keep_all_snr_gt))
+            parts.append(
+                cap_observations(
+                    lc[lc["object_id"] == oid].copy(), max_obs, keep_all_snr_gt
+                )
+            )
         lc = pd.concat(parts, ignore_index=True)
 
     usable_ids = valid_object_ids(lc, min_obs=3)
@@ -138,7 +170,9 @@ def preprocess_mallorn_training_tables(
     return lc, log
 
 
-def compute_flux_norm_stats(lc: pd.DataFrame, object_ids: list[str] | None = None) -> tuple[np.ndarray, np.ndarray]:
+def compute_flux_norm_stats(
+    lc: pd.DataFrame, object_ids: list[str] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     if object_ids is not None:
         lc = lc[lc["object_id"].isin(object_ids)]
     centers = np.zeros(len(BANDS), dtype=np.float32)
@@ -152,7 +186,11 @@ def compute_flux_norm_stats(lc: pd.DataFrame, object_ids: list[str] | None = Non
         scale = 1.4826 * mad
         if not np.isfinite(scale) or scale < 1e-6:
             q25, q75 = np.quantile(vals, [0.25, 0.75])
-            scale = float((q75 - q25) / 1.349) if (q75 - q25) > 1e-6 else float(np.std(vals))
+            scale = (
+                float((q75 - q25) / 1.349)
+                if (q75 - q25) > 1e-6
+                else float(np.std(vals))
+            )
         if not np.isfinite(scale) or scale < 1e-6:
             scale = 1.0
         centers[i] = center

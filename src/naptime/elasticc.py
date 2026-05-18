@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import hashlib
 import os
 import pickle
 from pathlib import Path
 import time
+from typing import Any
 
 from astropy.io import fits
 import numpy as np
@@ -12,7 +11,15 @@ import numpy as np
 from .data import BAND2IDX
 
 # Focused confuser taxonomy used throughout the current paper.
-FOCUSED_CLASS_NAMES: list[str] = ["TDE", "AGN-like", "SLSN", "PISN", "SN-Ia", "SN-II", "SN-Ibc"]
+FOCUSED_CLASS_NAMES: list[str] = [
+    "TDE",
+    "AGN-like",
+    "SLSN",
+    "PISN",
+    "SN-Ia",
+    "SN-II",
+    "SN-Ibc",
+]
 FOCUSED_RELEASE_TO_CLASS: dict[str, int] = {
     # ELAsTiCC1
     "ELASTICC_TRAIN_TDE": 0,
@@ -150,7 +157,9 @@ META_FIELDS = [
 ]
 
 
-def get_elasticc_taxonomy(name: str | None = None) -> tuple[str, list[str], dict[str, int]]:
+def get_elasticc_taxonomy(
+    name: str | None = None,
+) -> tuple[str, list[str], dict[str, int]]:
     taxonomy_name = name or "focused"
     if taxonomy_name not in ELASTICC_TAXONOMIES:
         raise ValueError(f"unknown ELAsTiCC taxonomy: {taxonomy_name}")
@@ -196,7 +205,9 @@ def _file_signature(path: str | Path) -> tuple[str, int, int]:
     return (str(path.resolve()), int(stat.st_size), int(stat.st_mtime_ns))
 
 
-def _meta_from_head(cols: dict[str, np.ndarray], idx: int, metadata_fields: list[str]) -> tuple[np.ndarray, np.ndarray]:
+def _meta_from_head(
+    cols: dict[str, np.ndarray], idx: int, metadata_fields: list[str]
+) -> tuple[np.ndarray, np.ndarray]:
     values = np.zeros(len(metadata_fields), dtype=np.float32)
     mask = np.zeros(len(metadata_fields), dtype=np.float32)
     for j, field in enumerate(metadata_fields):
@@ -247,11 +258,15 @@ def _cache_path_for_shard(
         "redshift_source": redshift_source,
         "metadata_fields": tuple(metadata_fields),
     }
-    digest = hashlib.blake2b(repr(sorted(key.items())).encode(), digest_size=12).hexdigest()
+    digest = hashlib.blake2b(
+        repr(sorted(key.items())).encode(), digest_size=12
+    ).hexdigest()
     return _default_cache_root() / f"{head_path.stem}.{digest}.pkl"
 
 
-def _load_cached_shard(cache_path: Path, *, head_path: Path, phot_path: Path) -> list[dict] | None:
+def _load_cached_shard(
+    cache_path: Path, *, head_path: Path, phot_path: Path
+) -> list[dict] | None:
     if not cache_path.exists():
         return None
     try:
@@ -273,7 +288,9 @@ def _load_cached_shard(cache_path: Path, *, head_path: Path, phot_path: Path) ->
     return records
 
 
-def _write_cached_shard(cache_path: Path, *, head_path: Path, phot_path: Path, records: list[dict]) -> None:
+def _write_cached_shard(
+    cache_path: Path, *, head_path: Path, phot_path: Path, records: list[dict]
+) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "cache_version": CACHE_VERSION,
@@ -301,7 +318,9 @@ def _records_from_shard(
     for i in range(n_rows):
         start = int(head["PTROBS_MIN"][i]) - 1
         end = int(head["PTROBS_MAX"][i])
-        bands = np.asarray([str(_decode(v)).strip().lower() for v in phot["BAND"][start:end]])
+        bands = np.asarray(
+            [str(_decode(v)).strip().lower() for v in phot["BAND"][start:end]]
+        )
         keep = np.array([b in BAND2IDX for b in bands], dtype=bool)
         if not np.any(keep):
             continue
@@ -335,6 +354,206 @@ def _records_from_shard(
             }
         )
     return records
+
+
+def _valid_object_ref_from_shard(
+    head: dict[str, np.ndarray],
+    phot: dict[str, np.ndarray],
+    *,
+    head_row: int,
+    target: int,
+    release_name: str,
+    head_path: Path,
+    phot_path: Path,
+    redshift_source: str,
+    metadata_fields: list[str],
+) -> dict[str, Any] | None:
+    start = int(head["PTROBS_MIN"][head_row]) - 1
+    end = int(head["PTROBS_MAX"][head_row])
+    bands = np.asarray(
+        [str(_decode(v)).strip().lower() for v in phot["BAND"][start:end]]
+    )
+    keep = np.array([b in BAND2IDX for b in bands], dtype=bool)
+    if not np.any(keep):
+        return None
+    flux = np.asarray(phot["FLUXCAL"][start:end], dtype=np.float32)[keep]
+    ferr = np.asarray(phot["FLUXCALERR"][start:end], dtype=np.float32)[keep]
+    pos_err = np.isfinite(flux) & np.isfinite(ferr) & (ferr > 0)
+    if int(pos_err.sum()) < 4:
+        return None
+    meta_values, meta_mask = _meta_from_head(head, head_row, metadata_fields)
+    z = _extract_redshift(head, head_row, redshift_source)
+    oid = f"{release_name}:{_decode(head['SNID'][head_row])}"
+    return {
+        "oid": oid,
+        "target": int(target),
+        "release_name": release_name,
+        "head_path": str(head_path),
+        "phot_path": str(phot_path),
+        "head_row": int(head_row),
+        "phot_start": int(start),
+        "phot_end": int(end),
+        "z": float(z),
+        "meta_values": meta_values.astype(np.float32),
+        "meta_mask": meta_mask.astype(np.float32),
+    }
+
+
+def scan_elasticc_index(
+    data_dir: str | Path,
+    *,
+    taxonomy: str = "focused",
+    redshift_source: str = "final",
+    metadata_fields: list[str] | None = None,
+    max_release_dirs: int | None = None,
+    max_shards_per_release: int | None = None,
+    max_objects_per_release: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    data_dir = Path(data_dir)
+    if redshift_source not in ELASTICC_REDSHIFT_SOURCES:
+        raise ValueError(f"unknown ELAsTiCC redshift source: {redshift_source}")
+    metadata_fields = list(META_FIELDS if metadata_fields is None else metadata_fields)
+    taxonomy_name, class_names, release_to_class = get_elasticc_taxonomy(taxonomy)
+    release_names = [name for name in release_to_class if (data_dir / name).exists()]
+    if max_release_dirs is not None:
+        release_names = release_names[:max_release_dirs]
+
+    refs: list[dict[str, Any]] = []
+    t0 = time.perf_counter()
+    print(
+        f"[elasticc-index] taxonomy={taxonomy_name} redshift_source={redshift_source} "
+        f"metadata_fields={len(metadata_fields)} releases={len(release_names)}",
+        flush=True,
+    )
+    for release_name in release_names:
+        release_t0 = time.perf_counter()
+        release_dir = data_dir / release_name
+        head_paths = sorted(release_dir.glob("*_HEAD.FITS.gz"))
+        if max_shards_per_release is not None:
+            head_paths = head_paths[:max_shards_per_release]
+        release_count = 0
+        target = release_to_class.get(release_name, -1)
+        print(
+            f"[elasticc-index] release={release_name} shards={len(head_paths)} target={target}",
+            flush=True,
+        )
+        for shard_idx, head_path in enumerate(head_paths, start=1):
+            phot_path = Path(str(head_path).replace("_HEAD.FITS.gz", "_PHOT.FITS.gz"))
+            if not phot_path.exists():
+                continue
+            shard_t0 = time.perf_counter()
+            head = _table_to_native(head_path)
+            phot = _table_to_native(phot_path)
+            shard_kept = 0
+            for i in range(len(head["SNID"])):
+                ref = _valid_object_ref_from_shard(
+                    head,
+                    phot,
+                    head_row=i,
+                    target=target,
+                    release_name=release_name,
+                    head_path=head_path,
+                    phot_path=phot_path,
+                    redshift_source=redshift_source,
+                    metadata_fields=metadata_fields,
+                )
+                if ref is None:
+                    continue
+                refs.append(ref)
+                release_count += 1
+                shard_kept += 1
+                if (
+                    max_objects_per_release is not None
+                    and release_count >= max_objects_per_release
+                ):
+                    break
+            if (
+                shard_idx == 1
+                or shard_idx == len(head_paths)
+                or shard_idx % 10 == 0
+                or (
+                    max_objects_per_release is not None
+                    and release_count >= max_objects_per_release
+                )
+            ):
+                print(
+                    f"[elasticc-index]   shard={shard_idx}/{len(head_paths)} "
+                    f"kept={shard_kept} elapsed={time.perf_counter() - shard_t0:.1f}s "
+                    f"cumulative_release={release_count}",
+                    flush=True,
+                )
+            if (
+                max_objects_per_release is not None
+                and release_count >= max_objects_per_release
+            ):
+                break
+        print(
+            f"[elasticc-index] release_done={release_name} kept={release_count} "
+            f"elapsed={time.perf_counter() - release_t0:.1f}s total_refs={len(refs)}",
+            flush=True,
+        )
+    print(
+        f"[elasticc-index] done refs={len(refs)} elapsed={time.perf_counter() - t0:.1f}s",
+        flush=True,
+    )
+    return refs, class_names, taxonomy_name
+
+
+def extract_elasticc_object_from_ref(
+    ref: dict[str, Any],
+    *,
+    shard_cache: (
+        dict[tuple[str, str], tuple[dict[str, np.ndarray], dict[str, np.ndarray]]]
+        | None
+    ) = None,
+) -> dict[str, Any]:
+    head_path = str(ref["head_path"])
+    phot_path = str(ref["phot_path"])
+    cache_key = (head_path, phot_path)
+    if shard_cache is not None and cache_key in shard_cache:
+        head, phot = shard_cache[cache_key]
+    else:
+        head = _table_to_native(head_path)
+        phot = _table_to_native(phot_path)
+        if shard_cache is not None:
+            shard_cache[cache_key] = (head, phot)
+
+    start = int(ref["phot_start"])
+    end = int(ref["phot_end"])
+    bands = np.asarray(
+        [str(_decode(v)).strip().lower() for v in phot["BAND"][start:end]]
+    )
+    keep = np.array([b in BAND2IDX for b in bands], dtype=bool)
+    flux = np.asarray(phot["FLUXCAL"][start:end], dtype=np.float32)[keep]
+    ferr = np.asarray(phot["FLUXCALERR"][start:end], dtype=np.float32)[keep]
+    mjd = np.asarray(phot["MJD"][start:end], dtype=np.float32)[keep]
+    bands = bands[keep]
+    pos_err = np.isfinite(flux) & np.isfinite(ferr) & (ferr > 0)
+    flux = flux[pos_err]
+    ferr = ferr[pos_err]
+    mjd = mjd[pos_err]
+    bands = bands[pos_err]
+    band_idx = np.array([BAND2IDX[b] for b in bands], dtype=np.int64)
+    if len(mjd) < 4:
+        raise ValueError(
+            f"indexed ELAsTiCC object became invalid after extraction: {ref['oid']}"
+        )
+    return {
+        "oid": str(ref["oid"]),
+        "t_raw": mjd,
+        "flux_raw": flux,
+        "ferr_raw": ferr,
+        "band_idx": band_idx,
+        "target": int(ref["target"]),
+        "z": float(ref.get("z", np.nan)),
+        "meta_values": np.asarray(
+            ref.get("meta_values", np.zeros(0, dtype=np.float32)), dtype=np.float32
+        ),
+        "meta_mask": np.asarray(
+            ref.get("meta_mask", np.zeros(0, dtype=np.float32)), dtype=np.float32
+        ),
+        "release_name": str(ref.get("release_name", "")),
+    }
 
 
 def load_elasticc_records(
@@ -387,7 +606,9 @@ def load_elasticc_records(
                 redshift_source=redshift_source,
                 metadata_fields=metadata_fields,
             )
-            shard_records = _load_cached_shard(cache_path, head_path=head_path, phot_path=phot_path)
+            shard_records = _load_cached_shard(
+                cache_path, head_path=head_path, phot_path=phot_path
+            )
             cache_hit = shard_records is not None
             if shard_records is None:
                 shard_records = _records_from_shard(
@@ -398,19 +619,30 @@ def load_elasticc_records(
                     redshift_source=redshift_source,
                     metadata_fields=metadata_fields,
                 )
-                _write_cached_shard(cache_path, head_path=head_path, phot_path=phot_path, records=shard_records)
+                _write_cached_shard(
+                    cache_path,
+                    head_path=head_path,
+                    phot_path=phot_path,
+                    records=shard_records,
+                )
             for rec in shard_records:
                 rec_out = dict(rec)
                 rec_out["taxonomy"] = taxonomy_name
                 records.append(rec_out)
                 release_count += 1
-                if max_objects_per_release is not None and release_count >= max_objects_per_release:
+                if (
+                    max_objects_per_release is not None
+                    and release_count >= max_objects_per_release
+                ):
                     break
             if (
                 shard_idx == 1
                 or shard_idx == len(head_paths)
                 or shard_idx % 10 == 0
-                or (max_objects_per_release is not None and release_count >= max_objects_per_release)
+                or (
+                    max_objects_per_release is not None
+                    and release_count >= max_objects_per_release
+                )
             ):
                 print(
                     f"[elasticc-load]   shard={shard_idx}/{len(head_paths)} "
@@ -418,14 +650,20 @@ def load_elasticc_records(
                     f"elapsed={time.perf_counter() - shard_t0:.1f}s cumulative_release={release_count}",
                     flush=True,
                 )
-            if max_objects_per_release is not None and release_count >= max_objects_per_release:
+            if (
+                max_objects_per_release is not None
+                and release_count >= max_objects_per_release
+            ):
                 break
         print(
             f"[elasticc-load] release_done={release_name} kept={release_count} "
             f"elapsed={time.perf_counter() - release_t0:.1f}s total_records={len(records)}",
             flush=True,
         )
-    print(f"[elasticc-load] done records={len(records)} elapsed={time.perf_counter() - t0:.1f}s", flush=True)
+    print(
+        f"[elasticc-load] done records={len(records)} elapsed={time.perf_counter() - t0:.1f}s",
+        flush=True,
+    )
     return records, class_names, taxonomy_name
 
 
