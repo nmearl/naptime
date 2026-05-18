@@ -1,0 +1,38 @@
+[project]
+name = "naptime"
+version = "0.1.0"
+description = "ConvGNP-like joint reconstruction and classification models for irregular multi-band light curves."
+readme = "README.md"
+authors = [
+    { name = "Nicholas Earl", email = "contact@nicholasearl.me" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "click>=8.1",
+    "pandas>=3.0.2",
+    "scikit-learn>=1.8.0",
+    "matplotlib>=3.10.8",
+    "seaborn>=0.13.2",
+    "alerce>=2.3.0",
+    "nicegui>=3.9.0",
+    "plotly>=6.6.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "tqdm>=4.66",
+]
+brokers = [
+    "alerce>=1.4.0",
+]
+
+[project.scripts]
+naptime = "naptime.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.30,<0.10.0"]
+build-backend = "uv_build"
