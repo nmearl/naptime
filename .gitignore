@@ -11,3 +11,9 @@ wheels/
 
 # IDE settings
 .idea/
+
+# Local generated artifacts
+.DS_Store
+docs/_build/
+output/
+scripts/
