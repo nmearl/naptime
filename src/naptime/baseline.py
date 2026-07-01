@@ -765,6 +765,43 @@ def build_lazy_elasticc_datasets(
     return train_ds, val_ds
 
 
+def build_lazy_elasticc_val_dataset(
+    *,
+    val_refs: list[dict],
+    flux_center_by_band: np.ndarray,
+    flux_scale_by_band: np.ndarray,
+    meta_center: np.ndarray | None = None,
+    meta_scale: np.ndarray | None = None,
+    train_refs_for_meta: list[dict] | None = None,
+    use_rest_frame_time: bool = False,
+    max_cached_shards: int = 1,
+) -> "LazyElasticcDataset":
+    """Build a val-only LazyElasticcDataset from pre-computed norm stats.
+
+    flux_center_by_band and flux_scale_by_band should come from the checkpoint.
+    If meta_center/meta_scale are absent, pass train_refs_for_meta to compute
+    them from in-memory ref dicts (no PHOT shard I/O).
+    """
+    if meta_center is None or meta_scale is None:
+        if train_refs_for_meta is not None:
+            meta_center, meta_scale = compute_meta_norm_stats_from_refs(
+                train_refs_for_meta
+            )
+        else:
+            n = val_refs[0].get("meta_values", np.zeros(0)).shape[0] if val_refs else 0
+            meta_center = np.zeros(n, dtype=np.float32)
+            meta_scale = np.ones(n, dtype=np.float32)
+    return LazyElasticcDataset(
+        val_refs,
+        flux_center_by_band=np.asarray(flux_center_by_band, dtype=np.float32),
+        flux_scale_by_band=np.asarray(flux_scale_by_band, dtype=np.float32),
+        use_rest_frame_time=use_rest_frame_time,
+        meta_center=meta_center,
+        meta_scale=meta_scale,
+        max_cached_shards=max_cached_shards,
+    )
+
+
 def prepare_mallorn_baseline_test_dataset(
     data_dir: str | Path,
     *,
@@ -1724,6 +1761,8 @@ def save_baseline_checkpoint(
     z_max: float,
     flux_center_by_band: np.ndarray,
     flux_scale_by_band: np.ndarray,
+    meta_center: np.ndarray | None = None,
+    meta_scale: np.ndarray | None = None,
     extra_payload: dict | None = None,
 ) -> None:
     payload = {
@@ -1740,6 +1779,10 @@ def save_baseline_checkpoint(
         ).tolist(),
         "flux_scale_by_band": np.asarray(flux_scale_by_band, dtype=np.float32).tolist(),
     }
+    if meta_center is not None:
+        payload["meta_center"] = np.asarray(meta_center, dtype=np.float32).tolist()
+    if meta_scale is not None:
+        payload["meta_scale"] = np.asarray(meta_scale, dtype=np.float32).tolist()
     if extra_payload:
         payload.update(extra_payload)
     torch.save(payload, path)

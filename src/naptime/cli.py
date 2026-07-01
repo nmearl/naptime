@@ -19,6 +19,7 @@ from .baseline import (
     MALLORN_CLASS_NAMES,
     baseline_loss,
     build_lazy_elasticc_datasets,
+    build_lazy_elasticc_val_dataset,
     build_mallorn_baseline_datasets,
     build_precomputed_baseline_datasets,
     collect_full_context_predictions,
@@ -728,6 +729,8 @@ def train_mallorn_baseline(
                 z_max=z_max,
                 flux_center_by_band=train_ds.flux_center_by_band,
                 flux_scale_by_band=train_ds.flux_scale_by_band,
+                meta_center=getattr(train_ds, "meta_center", None),
+                meta_scale=getattr(train_ds, "meta_scale", None),
             )
 
         if checkpoint_metric in improved:
@@ -834,6 +837,7 @@ def train_mallorn_baseline(
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
 @click.option("--lazy-elasticc/--eager-elasticc", default=False, show_default=True)
+@click.option("--max-cached-shards", type=int, default=1, show_default=True)
 @click.option("--device", type=str, default=None)
 def train_elasticc_focus_baseline(
     data_dir: Path,
@@ -881,6 +885,7 @@ def train_elasticc_focus_baseline(
     max_shards_per_release: int | None,
     max_objects_per_release: int | None,
     lazy_elasticc: bool,
+    max_cached_shards: int,
     device: str | None,
 ):
     taxonomy_name, class_names, _ = get_elasticc_taxonomy(elasticc_taxonomy)
@@ -918,6 +923,7 @@ def train_elasticc_focus_baseline(
             train_refs=train_refs,
             val_refs=val_refs,
             use_rest_frame_time=use_rest_frame_time,
+            max_cached_shards=max_cached_shards,
         )
         _print_elasticc_ref_diagnostics(train_refs, val_refs, class_names)
     else:
@@ -1033,6 +1039,8 @@ def train_elasticc_focus_baseline(
         z_max=z_max,
         flux_center_by_band=train_ds.flux_center_by_band,
         flux_scale_by_band=train_ds.flux_scale_by_band,
+        meta_center=getattr(train_ds, "meta_center", None),
+        meta_scale=getattr(train_ds, "meta_scale", None),
         extra_payload={
             "elasticc_taxonomy": taxonomy_name,
             "class_names": class_names,
@@ -1299,6 +1307,8 @@ def crossval_mallorn_baseline(
             z_max=z_max,
             flux_center_by_band=train_ds.flux_center_by_band,
             flux_scale_by_band=train_ds.flux_scale_by_band,
+            meta_center=getattr(train_ds, "meta_center", None),
+            meta_scale=getattr(train_ds, "meta_scale", None),
         )
 
     y = np.asarray([row["target"] for row in oof_rows], dtype=int)
@@ -1586,6 +1596,8 @@ def evaluate_elasticc_focus_baseline(
         )
 
     if lazy_elasticc:
+        import gc
+
         refs, class_names, _ = scan_elasticc_index(
             data_dir,
             taxonomy=taxonomy_name,
@@ -1604,14 +1616,38 @@ def evaluate_elasticc_focus_baseline(
             stratify=all_labels,
             random_state=seed,
         )
-        train_refs = [refs[int(i)] for i in train_idx]
         val_refs = [refs[int(i)] for i in val_idx]
-        train_ds, val_ds = build_lazy_elasticc_datasets(
-            train_refs=train_refs,
+
+        # Use checkpoint meta stats if present; otherwise compute from ref dicts
+        # (reads meta_values in memory, no PHOT shard I/O).
+        if "meta_center" in ckpt and "meta_scale" in ckpt:
+            meta_center = np.asarray(ckpt["meta_center"], dtype=np.float32)
+            meta_scale = np.asarray(ckpt["meta_scale"], dtype=np.float32)
+            train_refs_for_meta = None
+        else:
+            train_refs_for_meta = [refs[int(i)] for i in train_idx]
+            meta_center = meta_scale = None
+
+        # Free the full refs list; only val_refs are needed from here.
+        del refs, all_labels, train_idx, val_idx
+        gc.collect()
+
+        val_ds = build_lazy_elasticc_val_dataset(
             val_refs=val_refs,
+            flux_center_by_band=np.asarray(
+                ckpt["flux_center_by_band"], dtype=np.float32
+            ),
+            flux_scale_by_band=np.asarray(ckpt["flux_scale_by_band"], dtype=np.float32),
+            meta_center=meta_center,
+            meta_scale=meta_scale,
+            train_refs_for_meta=train_refs_for_meta,
             use_rest_frame_time=use_rest_frame_time,
             max_cached_shards=max_cached_shards,
         )
+
+        if train_refs_for_meta is not None:
+            del train_refs_for_meta
+            gc.collect()
     else:
         records, class_names, _ = load_elasticc_records(
             data_dir,
