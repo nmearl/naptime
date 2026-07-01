@@ -724,7 +724,7 @@ def build_lazy_elasticc_datasets(
     train_refs: list[dict],
     val_refs: list[dict],
     use_rest_frame_time: bool = False,
-    max_cached_shards: int = 2,
+    max_cached_shards: int = 1,
 ):
     flux_center_by_band, flux_scale_by_band = compute_flux_norm_stats_from_refs(
         train_refs
@@ -1640,54 +1640,50 @@ def collect_full_context_predictions(
     logits, labels = [], []
     rows: list[dict[str, float | str | int]] = []
     nan_batches = 0
-    object_ids = list(dataset.object_ids)
-    for start in range(0, len(object_ids), batch_size):
-        batch_ids = object_ids[start : start + batch_size]
-        items = []
-        for oid in batch_ids:
-            item = dataset.data[oid].copy()
-            item["oid"] = oid
-            items.append(item)
-        batch = make_full_context_batch(items, z_min=z_min, z_max=z_max).to(device)
-        output = model(batch)
-        if not (
-            torch.isfinite(output.pred_mean).all()
-            and torch.isfinite(output.pred_var).all()
-            and torch.isfinite(output.class_logits).all()
-        ):
-            nan_batches += 1
-            continue
-        batch_logits = output.class_logits.detach().cpu()
-        batch_labels = batch.labels.detach().cpu()
-        logits.append(batch_logits)
-        labels.append(batch_labels)
-        is_binary = batch_logits.dim() == 1 or batch_logits.shape[-1] == 1
-        if is_binary:
-            batch_probs = torch.sigmoid(
-                batch_logits.squeeze(-1) if batch_logits.dim() > 1 else batch_logits
-            ).numpy()
-            for oid, label, prob in zip(
-                batch.object_ids, batch_labels.numpy().astype(int), batch_probs
+    with torch.no_grad():
+        for start in range(0, len(dataset), batch_size):
+            stop = min(start + batch_size, len(dataset))
+            items = [dataset[i] for i in range(start, stop)]
+            batch = make_full_context_batch(items, z_min=z_min, z_max=z_max).to(device)
+            output = model(batch)
+            if not (
+                torch.isfinite(output.pred_mean).all()
+                and torch.isfinite(output.pred_var).all()
+                and torch.isfinite(output.class_logits).all()
             ):
-                rows.append(
-                    {
+                nan_batches += 1
+                continue
+            batch_logits = output.class_logits.detach().cpu()
+            batch_labels = batch.labels.detach().cpu()
+            logits.append(batch_logits)
+            labels.append(batch_labels)
+            is_binary = batch_logits.dim() == 1 or batch_logits.shape[-1] == 1
+            if is_binary:
+                batch_probs = torch.sigmoid(
+                    batch_logits.squeeze(-1) if batch_logits.dim() > 1 else batch_logits
+                ).numpy()
+                for oid, label, prob in zip(
+                    batch.object_ids, batch_labels.numpy().astype(int), batch_probs
+                ):
+                    rows.append(
+                        {
+                            "object_id": str(oid),
+                            "target": int(label),
+                            "prob_tde": float(prob),
+                        }
+                    )
+            else:
+                batch_probs = torch.softmax(batch_logits, dim=-1).numpy()
+                for oid, label, probs_row in zip(
+                    batch.object_ids, batch_labels.numpy().astype(int), batch_probs
+                ):
+                    row: dict[str, float | str | int] = {
                         "object_id": str(oid),
                         "target": int(label),
-                        "prob_tde": float(prob),
                     }
-                )
-        else:
-            batch_probs = torch.softmax(batch_logits, dim=-1).numpy()
-            for oid, label, probs_row in zip(
-                batch.object_ids, batch_labels.numpy().astype(int), batch_probs
-            ):
-                row: dict[str, float | str | int] = {
-                    "object_id": str(oid),
-                    "target": int(label),
-                }
-                for k, p in enumerate(probs_row):
-                    row[f"prob_class_{k}"] = float(p)
-                rows.append(row)
+                    for k, p in enumerate(probs_row):
+                        row[f"prob_class_{k}"] = float(p)
+                    rows.append(row)
     metrics: dict[str, float] = {}
     if nan_batches > 0:
         metrics["nan_batches"] = float(nan_batches)

@@ -1531,6 +1531,8 @@ def evaluate_mallorn_baseline(
 @click.option("--max-release-dirs", type=int, default=None)
 @click.option("--max-shards-per-release", type=int, default=None)
 @click.option("--max-objects-per-release", type=int, default=None)
+@click.option("--lazy-elasticc/--eager-elasticc", default=False, show_default=True)
+@click.option("--max-cached-shards", type=int, default=1, show_default=True)
 @click.option("--device", type=str, default=None)
 @click.option(
     "--full-context-eval/--masked-context-eval", default=False, show_default=True
@@ -1553,6 +1555,8 @@ def evaluate_elasticc_focus_baseline(
     max_release_dirs: int | None,
     max_shards_per_release: int | None,
     max_objects_per_release: int | None,
+    lazy_elasticc: bool,
+    max_cached_shards: int,
     device: str | None,
     full_context_eval: bool,
 ):
@@ -1581,31 +1585,59 @@ def evaluate_elasticc_focus_baseline(
             f"checkpoint redshift source is {ckpt_redshift_source}, but --redshift-source {redshift_source} was requested"
         )
 
-    records, class_names, _ = load_elasticc_records(
-        data_dir,
-        taxonomy=taxonomy_name,
-        redshift_source=ckpt_redshift_source,
-        metadata_fields=ckpt_metadata_fields,
-        max_release_dirs=max_release_dirs,
-        max_shards_per_release=max_shards_per_release,
-        max_objects_per_release=max_objects_per_release,
-    )
-    if not records:
-        raise click.ClickException("No ELAsTiCC focus records were loaded.")
-    all_labels = [int(r["target"]) for r in records]
-    train_idx, val_idx = train_test_split(
-        np.arange(len(records)),
-        test_size=val_frac,
-        stratify=all_labels,
-        random_state=seed,
-    )
-    train_records = [records[int(i)] for i in train_idx]
-    val_records = [records[int(i)] for i in val_idx]
-    train_ds, val_ds = build_precomputed_baseline_datasets(
-        train_records=train_records,
-        val_records=val_records,
-        use_rest_frame_time=use_rest_frame_time,
-    )
+    if lazy_elasticc:
+        refs, class_names, _ = scan_elasticc_index(
+            data_dir,
+            taxonomy=taxonomy_name,
+            redshift_source=ckpt_redshift_source,
+            metadata_fields=ckpt_metadata_fields,
+            max_release_dirs=max_release_dirs,
+            max_shards_per_release=max_shards_per_release,
+            max_objects_per_release=max_objects_per_release,
+        )
+        if not refs:
+            raise click.ClickException("No ELAsTiCC focus records were indexed.")
+        all_labels = [int(ref["target"]) for ref in refs]
+        train_idx, val_idx = train_test_split(
+            np.arange(len(refs)),
+            test_size=val_frac,
+            stratify=all_labels,
+            random_state=seed,
+        )
+        train_refs = [refs[int(i)] for i in train_idx]
+        val_refs = [refs[int(i)] for i in val_idx]
+        train_ds, val_ds = build_lazy_elasticc_datasets(
+            train_refs=train_refs,
+            val_refs=val_refs,
+            use_rest_frame_time=use_rest_frame_time,
+            max_cached_shards=max_cached_shards,
+        )
+    else:
+        records, class_names, _ = load_elasticc_records(
+            data_dir,
+            taxonomy=taxonomy_name,
+            redshift_source=ckpt_redshift_source,
+            metadata_fields=ckpt_metadata_fields,
+            max_release_dirs=max_release_dirs,
+            max_shards_per_release=max_shards_per_release,
+            max_objects_per_release=max_objects_per_release,
+        )
+        if not records:
+            raise click.ClickException("No ELAsTiCC focus records were loaded.")
+        all_labels = [int(r["target"]) for r in records]
+        train_idx, val_idx = train_test_split(
+            np.arange(len(records)),
+            test_size=val_frac,
+            stratify=all_labels,
+            random_state=seed,
+        )
+        train_records = [records[int(i)] for i in train_idx]
+        val_records = [records[int(i)] for i in val_idx]
+        train_ds, val_ds = build_precomputed_baseline_datasets(
+            train_records=train_records,
+            val_records=val_records,
+            use_rest_frame_time=use_rest_frame_time,
+        )
 
     z_min = float(ckpt["z_min"])
     z_max = float(ckpt["z_max"])
