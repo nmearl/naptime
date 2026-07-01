@@ -226,6 +226,7 @@
         <article role="main" id="furo-main-content">
           <h1>Source code for naptime.baseline</h1><div class="highlight"><pre>
 <span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">asdict</span><span class="p">,</span> <span class="n">dataclass</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Iterable</span>
@@ -672,14 +673,23 @@
         <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">refs</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_cache_get_or_load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ref</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-        <span class="n">record</span> <span class="o">=</span> <span class="n">extract_elasticc_object_from_ref</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="n">shard_cache</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span><span class="p">)</span>
         <span class="n">cache_key</span> <span class="o">=</span> <span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;head_path&quot;</span><span class="p">]),</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;phot_path&quot;</span><span class="p">]))</span>
+        <span class="k">if</span> <span class="n">cache_key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span><span class="p">:</span>
+            <span class="k">while</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_cached_shards</span><span class="p">:</span>
+                <span class="n">stale_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">stale_key</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+        <span class="n">record</span> <span class="o">=</span> <span class="n">extract_elasticc_object_from_ref</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="n">shard_cache</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">cache_key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">cache_key</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cache_key</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">key</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span> <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span>
+        <span class="p">]</span>
         <span class="k">while</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="p">)</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_cached_shards</span><span class="p">:</span>
             <span class="n">stale_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache_order</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_shard_cache</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">stale_key</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">record</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
@@ -883,6 +893,10 @@
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">)):</span>
         <span class="n">vals</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">for</span> <span class="n">ref</span> <span class="ow">in</span> <span class="n">refs</span><span class="p">:</span>
+            <span class="n">cache_key</span> <span class="o">=</span> <span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;head_path&quot;</span><span class="p">]),</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;phot_path&quot;</span><span class="p">]))</span>
+            <span class="k">if</span> <span class="n">cache_key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">shard_cache</span><span class="p">:</span>
+                <span class="n">shard_cache</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+                <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
             <span class="n">record</span> <span class="o">=</span> <span class="n">extract_elasticc_object_from_ref</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="n">shard_cache</span><span class="o">=</span><span class="n">shard_cache</span><span class="p">)</span>
             <span class="n">band_idx</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">record</span><span class="p">[</span><span class="s2">&quot;band_idx&quot;</span><span class="p">])</span>
             <span class="n">mask</span> <span class="o">=</span> <span class="n">band_idx</span> <span class="o">==</span> <span class="n">i</span>
@@ -1047,6 +1061,46 @@
         <span class="n">max_cached_shards</span><span class="o">=</span><span class="n">max_cached_shards</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">train_ds</span><span class="p">,</span> <span class="n">val_ds</span></div>
+
+
+
+<div class="viewcode-block" id="build_lazy_elasticc_val_dataset">
+<a class="viewcode-back" href="../../api.html#naptime.baseline.build_lazy_elasticc_val_dataset">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">build_lazy_elasticc_val_dataset</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">val_refs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
+    <span class="n">flux_center_by_band</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">flux_scale_by_band</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">meta_center</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">meta_scale</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">train_refs_for_meta</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">use_rest_frame_time</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">max_cached_shards</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;LazyElasticcDataset&quot;</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build a val-only LazyElasticcDataset from pre-computed norm stats.</span>
+
+<span class="sd">    flux_center_by_band and flux_scale_by_band should come from the checkpoint.</span>
+<span class="sd">    If meta_center/meta_scale are absent, pass train_refs_for_meta to compute</span>
+<span class="sd">    them from in-memory ref dicts (no PHOT shard I/O).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">meta_center</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">meta_scale</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">train_refs_for_meta</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">meta_center</span><span class="p">,</span> <span class="n">meta_scale</span> <span class="o">=</span> <span class="n">compute_meta_norm_stats_from_refs</span><span class="p">(</span>
+                <span class="n">train_refs_for_meta</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">n</span> <span class="o">=</span> <span class="n">val_refs</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;meta_values&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">val_refs</span> <span class="k">else</span> <span class="mi">0</span>
+            <span class="n">meta_center</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+            <span class="n">meta_scale</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">LazyElasticcDataset</span><span class="p">(</span>
+        <span class="n">val_refs</span><span class="p">,</span>
+        <span class="n">flux_center_by_band</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_center_by_band</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+        <span class="n">flux_scale_by_band</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_scale_by_band</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+        <span class="n">use_rest_frame_time</span><span class="o">=</span><span class="n">use_rest_frame_time</span><span class="p">,</span>
+        <span class="n">meta_center</span><span class="o">=</span><span class="n">meta_center</span><span class="p">,</span>
+        <span class="n">meta_scale</span><span class="o">=</span><span class="n">meta_scale</span><span class="p">,</span>
+        <span class="n">max_cached_shards</span><span class="o">=</span><span class="n">max_cached_shards</span><span class="p">,</span>
+    <span class="p">)</span></div>
 
 
 
@@ -2062,6 +2116,8 @@
     <span class="n">z_max</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">flux_center_by_band</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
     <span class="n">flux_scale_by_band</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+    <span class="n">meta_center</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">meta_scale</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">extra_payload</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
     <span class="n">payload</span> <span class="o">=</span> <span class="p">{</span>
@@ -2078,6 +2134,10 @@
         <span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span>
         <span class="s2">&quot;flux_scale_by_band&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">flux_scale_by_band</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span>
     <span class="p">}</span>
+    <span class="k">if</span> <span class="n">meta_center</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;meta_center&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">meta_center</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">meta_scale</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;meta_scale&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">meta_scale</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">extra_payload</span><span class="p">:</span>
         <span class="n">payload</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">extra_payload</span><span class="p">)</span>
     <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">payload</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span></div>
