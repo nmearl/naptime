@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass
+import gc
 import hashlib
 from pathlib import Path
 from typing import Iterable
@@ -401,14 +402,23 @@ class LazyElasticcDataset(Dataset):
         return len(self.refs)
 
     def _cache_get_or_load(self, ref: dict) -> dict:
-        record = extract_elasticc_object_from_ref(ref, shard_cache=self._shard_cache)
         cache_key = (str(ref["head_path"]), str(ref["phot_path"]))
+        if cache_key not in self._shard_cache:
+            while len(self._shard_cache_order) >= self.max_cached_shards:
+                stale_key = self._shard_cache_order.pop(0)
+                self._shard_cache.pop(stale_key, None)
+            gc.collect()
+        record = extract_elasticc_object_from_ref(ref, shard_cache=self._shard_cache)
         if cache_key in self._shard_cache_order:
             self._shard_cache_order.remove(cache_key)
         self._shard_cache_order.append(cache_key)
+        self._shard_cache_order = [
+            key for key in self._shard_cache_order if key in self._shard_cache
+        ]
         while len(self._shard_cache_order) > self.max_cached_shards:
             stale_key = self._shard_cache_order.pop(0)
             self._shard_cache.pop(stale_key, None)
+            gc.collect()
         return record
 
     def __getitem__(self, idx: int) -> dict:
@@ -597,6 +607,10 @@ def compute_flux_norm_stats_from_refs(
     for i in range(len(BANDS)):
         vals = []
         for ref in refs:
+            cache_key = (str(ref["head_path"]), str(ref["phot_path"]))
+            if cache_key not in shard_cache:
+                shard_cache.clear()
+                gc.collect()
             record = extract_elasticc_object_from_ref(ref, shard_cache=shard_cache)
             band_idx = np.asarray(record["band_idx"])
             mask = band_idx == i

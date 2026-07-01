@@ -1,9 +1,10 @@
 import hashlib
+import gc
 import os
 import pickle
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Iterable
 
 from astropy.io import fits
 import numpy as np
@@ -156,6 +157,8 @@ META_FIELDS = [
     "HOSTGAL_MAG_Y",
 ]
 
+PHOT_COLUMNS = ("BAND", "FLUXCAL", "FLUXCALERR", "MJD")
+
 
 def get_elasticc_taxonomy(
     name: str | None = None,
@@ -187,11 +190,14 @@ def _is_missing_meta_value(field: str, value: float) -> bool:
     return False
 
 
-def _table_to_native(path: str | Path):
+def _table_to_native(path: str | Path, columns: Iterable[str] | None = None):
+    requested = None if columns is None else set(columns)
     with fits.open(path, memmap=False) as hdul:
         data = hdul[1].data
         cols = {}
         for name in data.names:
+            if requested is not None and name not in requested:
+                continue
             arr = np.asarray(data[name])
             if arr.dtype.byteorder not in ("=", "|"):
                 arr = arr.byteswap().view(arr.dtype.newbyteorder("="))
@@ -235,6 +241,14 @@ def _extract_redshift(cols: dict[str, np.ndarray], idx: int, source: str) -> flo
     value = cols[field][idx]
     value = float(value) if np.isfinite(value) else np.nan
     return value if not _is_missing_meta_value(field, value) else np.nan
+
+
+def _redshift_columns(source: str) -> tuple[str, ...]:
+    if source == "final":
+        return ("REDSHIFT_FINAL",)
+    if source == "photoz":
+        return ("HOSTGAL_PHOTOZ",)
+    return ()
 
 
 def _default_cache_root() -> Path:
@@ -312,8 +326,15 @@ def _records_from_shard(
     metadata_fields: list[str],
 ) -> list[dict]:
     records: list[dict] = []
-    head = _table_to_native(head_path)
-    phot = _table_to_native(phot_path)
+    head_columns = {
+        "SNID",
+        "PTROBS_MIN",
+        "PTROBS_MAX",
+        *_redshift_columns(redshift_source),
+        *metadata_fields,
+    }
+    head = _table_to_native(head_path, columns=head_columns)
+    phot = _table_to_native(phot_path, columns=PHOT_COLUMNS)
     n_rows = len(head["SNID"])
     for i in range(n_rows):
         start = int(head["PTROBS_MIN"][i]) - 1
@@ -442,8 +463,15 @@ def scan_elasticc_index(
             if not phot_path.exists():
                 continue
             shard_t0 = time.perf_counter()
-            head = _table_to_native(head_path)
-            phot = _table_to_native(phot_path)
+            head_columns = {
+                "SNID",
+                "PTROBS_MIN",
+                "PTROBS_MAX",
+                *_redshift_columns(redshift_source),
+                *metadata_fields,
+            }
+            head = _table_to_native(head_path, columns=head_columns)
+            phot = _table_to_native(phot_path, columns=PHOT_COLUMNS)
             shard_kept = 0
             for i in range(len(head["SNID"])):
                 ref = _valid_object_ref_from_shard(
@@ -487,6 +515,9 @@ def scan_elasticc_index(
                 and release_count >= max_objects_per_release
             ):
                 break
+            del head
+            del phot
+            gc.collect()
         print(
             f"[elasticc-index] release_done={release_name} kept={release_count} "
             f"elapsed={time.perf_counter() - release_t0:.1f}s total_refs={len(refs)}",
@@ -511,12 +542,11 @@ def extract_elasticc_object_from_ref(
     phot_path = str(ref["phot_path"])
     cache_key = (head_path, phot_path)
     if shard_cache is not None and cache_key in shard_cache:
-        head, phot = shard_cache[cache_key]
+        _, phot = shard_cache[cache_key]
     else:
-        head = _table_to_native(head_path)
-        phot = _table_to_native(phot_path)
+        phot = _table_to_native(phot_path, columns=PHOT_COLUMNS)
         if shard_cache is not None:
-            shard_cache[cache_key] = (head, phot)
+            shard_cache[cache_key] = ({}, phot)
 
     start = int(ref["phot_start"])
     end = int(ref["phot_end"])
