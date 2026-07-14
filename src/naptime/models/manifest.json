@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+      "name": "elasticc2-families-photoz",
+      "taxonomy": "families",
+      "checkpoint": "latest.pt",
+      "description": "Metadata-aware ELAsTiCC2 family-level checkpoint. Store the checkpoint externally and mount it as /models/latest.pt for service deployment.",
+      "sha256": null
+    }
+  ]
+}

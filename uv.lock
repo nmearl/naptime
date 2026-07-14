@@ -1438,6 +1438,10 @@ dependencies = [
 brokers = [
     { name = "alerce" },
 ]
+serve = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 train = [
     { name = "pandas" },
     { name = "scikit-learn" },
@@ -1462,6 +1466,7 @@ requires-dist = [
     { name = "astropy", specifier = ">=7.2.0" },
     { name = "black", specifier = ">=26.5.0" },
     { name = "click", specifier = ">=8.1" },
+    { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.111" },
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "nicegui", specifier = ">=3.9.0" },
@@ -1474,8 +1479,9 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "torch", specifier = ">=2.1" },
     { name = "tqdm", marker = "extra == 'train'", specifier = ">=4.66" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'serve'", specifier = ">=0.29" },
 ]
-provides-extras = ["train", "brokers"]
+provides-extras = ["train", "brokers", "serve"]
 
 [package.metadata.requires-dev]
 docs = [

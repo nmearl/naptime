@@ -32,6 +32,10 @@ train = [
 brokers = [
     "alerce>=1.4.0",
 ]
+serve = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+]
 
 [project.scripts]
 naptime = "naptime.cli:main"

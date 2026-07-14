@@ -1,0 +1,6 @@
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+!README.md
+!manifest.json
