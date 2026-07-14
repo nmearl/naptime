@@ -1,0 +1,87 @@
+name: Auto Tag and Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version-changed: ${{ steps.check.outputs.changed }}
+      new-version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: check
+        run: |
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
+          git checkout HEAD~1 -- pyproject.toml 2>/dev/null || echo "No previous version"
+          PREVIOUS_VERSION=$(grep -E '^version = ' pyproject.toml 2>/dev/null | sed 's/version = "\(.*\)"/\1/' || echo "")
+
+          git checkout HEAD -- pyproject.toml
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Previous version: $PREVIOUS_VERSION"
+
+          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No version change detected"
+          fi
+
+  tag-and-publish:
+    needs: check-version
+    if: needs.check-version.outputs.version-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build package
+        run: uv build
+
+      - name: Create and push tag
+        run: |
+          VERSION=${{ needs.check-version.outputs.new-version }}
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.new-version }}
+          name: v${{ needs.check-version.outputs.new-version }}
+          draft: false
+          prerelease: ${{ contains(needs.check-version.outputs.new-version, 'rc') || contains(needs.check-version.outputs.new-version, 'beta') || contains(needs.check-version.outputs.new-version, 'alpha') }}
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

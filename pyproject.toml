@@ -1,6 +1,6 @@
 [project]
 name = "naptime"
-version = "0.1.0"
+version = "0.1.1"
 description = "ConvGNP-like joint reconstruction and classification models for irregular multi-band light curves."
 readme = "README.md"
 authors = [
