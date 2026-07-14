@@ -225,7 +225,9 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for naptime.baseline</h1><div class="highlight"><pre>
-<span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">asdict</span><span class="p">,</span> <span class="n">dataclass</span>
+<span></span><span class="sd">&quot;&quot;&quot;ConvGNP baseline: datasets, collation, model, training, and evaluation.&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">asdict</span><span class="p">,</span> <span class="n">dataclass</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
@@ -275,6 +277,8 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.BaselineBatch">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">BaselineBatch</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Padded, collated batch of light curves ready for model forward passes.&quot;&quot;&quot;</span>
+
     <span class="n">context_x</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="n">context_y</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="n">context_yerr</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
@@ -323,6 +327,23 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.BaselineCollateConfig">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">BaselineCollateConfig</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Configuration for ``collate_baseline_batch`` context/target splits.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    seed : int</span>
+<span class="sd">        Base RNG seed for deterministic per-object splits.</span>
+<span class="sd">    z_min, z_max : float</span>
+<span class="sd">        Redshift bounds for normalization.</span>
+<span class="sd">    mask_prob_min, mask_prob_max : float</span>
+<span class="sd">        Fraction of observations withheld as targets during training;</span>
+<span class="sd">        drawn uniformly from [min, max] per object.</span>
+<span class="sd">    min_context_points : int</span>
+<span class="sd">        Minimum number of context observations per object.</span>
+<span class="sd">    deterministic_val_fraction : float</span>
+<span class="sd">        Fixed context fraction used during validation.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
     <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span>
     <span class="n">z_min</span><span class="p">:</span> <span class="nb">float</span>
     <span class="n">z_max</span><span class="p">:</span> <span class="nb">float</span>
@@ -340,6 +361,12 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.ConvGNPBaselineConfig">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">ConvGNPBaselineConfig</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Hyperparameter configuration for ConvGNPBaseline.</span>
+
+<span class="sd">    Covers grid resolution, convolutional depth and width, set-convolution</span>
+<span class="sd">    bandwidths, and flags for the latent and metadata paths.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
     <span class="n">num_bands</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
     <span class="n">grid_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">256</span>
     <span class="n">grid_min</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
@@ -373,6 +400,15 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.ConvGNPBaselineOutput">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">ConvGNPBaselineOutput</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Output of a ConvGNPBaseline forward pass.</span>
+
+<span class="sd">    ``pred_mean`` and ``pred_var`` contain target-point flux predictions.</span>
+<span class="sd">    ``class_logits`` is one-dimensional for binary models and two-dimensional</span>
+<span class="sd">    for multiclass models. ``grid_features`` contains the temporal-grid</span>
+<span class="sd">    backbone activations. ``latent_mu`` and ``latent_logvar`` are present when</span>
+<span class="sd">    the global latent path is enabled.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
     <span class="n">pred_mean</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="n">pred_var</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="n">class_logits</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
@@ -386,6 +422,8 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.BaselineLossConfig">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">BaselineLossConfig</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Loss weighting and KL annealing configuration.&quot;&quot;&quot;</span>
+
     <span class="n">lambda_recon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
     <span class="n">lambda_cls</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
     <span class="n">pos_weight</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
@@ -401,6 +439,8 @@
 <a class="viewcode-back" href="../../api.html#naptime.baseline.BaselineLosses">[docs]</a>
 <span class="nd">@dataclass</span><span class="p">(</span><span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">BaselineLosses</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Individual loss terms from a forward pass: total, reconstruction, classification, KL.&quot;&quot;&quot;</span>
+
     <span class="n">total</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="n">recon</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
     <span class="bp">cls</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
@@ -453,6 +493,23 @@
 <div class="viewcode-block" id="MallornBaselineDataset">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.MallornBaselineDataset">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">MallornBaselineDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;PyTorch Dataset for MALLORN multiband photometry.</span>
+
+<span class="sd">    Normalizes flux and time at construction time. Items are dicts compatible</span>
+<span class="sd">    with ``collate_baseline_batch`` and use ``task_target`` when that column is</span>
+<span class="sd">    present in the object log.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    object_ids : list of str</span>
+<span class="sd">    lc : pd.DataFrame</span>
+<span class="sd">    log : pd.DataFrame</span>
+<span class="sd">    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,), optional</span>
+<span class="sd">        Per-band normalization stats; defaults to zero-center / unit-scale.</span>
+<span class="sd">    use_rest_frame_time : bool</span>
+<span class="sd">        Divide times by (1 + z) before span normalization.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="MallornBaselineDataset.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.MallornBaselineDataset.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
@@ -545,6 +602,18 @@
 <div class="viewcode-block" id="PrecomputedBaselineDataset">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.PrecomputedBaselineDataset">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">PrecomputedBaselineDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;PyTorch Dataset wrapping in-memory ELAsTiCC record dicts.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    records : list of dict</span>
+<span class="sd">        Record dicts from load_elasticc_records.</span>
+<span class="sd">    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)</span>
+<span class="sd">    meta_center, meta_scale : ndarray or None</span>
+<span class="sd">        Per-field metadata normalization; skipped if None.</span>
+<span class="sd">    use_rest_frame_time : bool</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="PrecomputedBaselineDataset.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.PrecomputedBaselineDataset.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
@@ -632,6 +701,22 @@
 <div class="viewcode-block" id="LazyElasticcDataset">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.LazyElasticcDataset">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">LazyElasticcDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;PyTorch Dataset that reads ELAsTiCC FITS shards on demand.</span>
+
+<span class="sd">    Holds only an object reference index in memory; photometry is loaded from</span>
+<span class="sd">    disk at __getitem__ time via an LRU shard cache bounded by max_cached_shards.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    refs : list of dict</span>
+<span class="sd">        Reference dicts from scan_elasticc_index.</span>
+<span class="sd">    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)</span>
+<span class="sd">    meta_center, meta_scale : ndarray or None</span>
+<span class="sd">    use_rest_frame_time : bool</span>
+<span class="sd">    max_cached_shards : int</span>
+<span class="sd">        Number of FITS shard pairs to hold in memory simultaneously.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="LazyElasticcDataset.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.LazyElasticcDataset.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
@@ -761,6 +846,26 @@
     <span class="n">use_rest_frame_time</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">num_classes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
 <span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load MALLORN data from disk and build stratified train/val datasets.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    data_dir : str or Path</span>
+<span class="sd">    seed : int</span>
+<span class="sd">    val_frac : float</span>
+<span class="sd">    max_obs : int</span>
+<span class="sd">    keep_all_snr_gt : float</span>
+<span class="sd">    use_rest_frame_time : bool</span>
+<span class="sd">    num_classes : int</span>
+<span class="sd">        Values &lt;= 1 use the dataset target column directly. Larger values use</span>
+<span class="sd">        the grouped MALLORN spectroscopic taxonomy.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    lc, log : pd.DataFrame</span>
+<span class="sd">    train_ds, val_ds : MallornBaselineDataset</span>
+<span class="sd">    train_ids, val_ids : list of str</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">lc</span><span class="p">,</span> <span class="n">log</span> <span class="o">=</span> <span class="n">load_all_data</span><span class="p">(</span><span class="n">data_dir</span><span class="p">)</span>
     <span class="n">lc</span><span class="p">,</span> <span class="n">log</span> <span class="o">=</span> <span class="n">preprocess_mallorn_training_tables</span><span class="p">(</span>
         <span class="n">lc</span><span class="p">,</span> <span class="n">log</span><span class="p">,</span> <span class="n">max_obs</span><span class="o">=</span><span class="n">max_obs</span><span class="p">,</span> <span class="n">keep_all_snr_gt</span><span class="o">=</span><span class="n">keep_all_snr_gt</span>
@@ -850,6 +955,12 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">compute_flux_norm_stats_from_records</span><span class="p">(</span>
     <span class="n">records</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute per-band robust flux center and scale from in-memory record dicts.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    centers, scales : ndarray, shape (6,)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">centers</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="n">scales</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">)):</span>
@@ -885,6 +996,17 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">compute_flux_norm_stats_from_refs</span><span class="p">(</span>
     <span class="n">refs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute per-band robust flux center and scale by streaming through FITS shards.</span>
+
+<span class="sd">    Makes one pass per band over the reference set and loads only the shards</span>
+<span class="sd">    needed for the current object references. This has higher I/O cost than</span>
+<span class="sd">    ``compute_flux_norm_stats_from_records`` but avoids keeping all photometry</span>
+<span class="sd">    records in memory.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    centers, scales : ndarray, shape (6,)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">centers</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="n">scales</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">BANDS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="n">shard_cache</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span>
@@ -928,6 +1050,12 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">compute_meta_norm_stats_from_records</span><span class="p">(</span>
     <span class="n">records</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute per-field robust metadata center and scale from in-memory records.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    centers, scales : ndarray, shape (n_fields,)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">all_values</span> <span class="o">=</span> <span class="p">[</span>
         <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span>
             <span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;meta_values&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span>
@@ -965,6 +1093,14 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">compute_meta_norm_stats_from_refs</span><span class="p">(</span>
     <span class="n">refs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute per-field robust metadata center and scale from lazy ref dicts.</span>
+
+<span class="sd">    Reads meta_values from the in-memory ref index (no PHOT shard I/O).</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    centers, scales : ndarray, shape (n_fields,)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">all_values</span> <span class="o">=</span> <span class="p">[</span>
         <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span>
             <span class="n">ref</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;meta_values&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span>
@@ -1038,6 +1174,19 @@
     <span class="n">use_rest_frame_time</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">max_cached_shards</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
 <span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build lazy train and val ELAsTiCC datasets with normalization from train refs.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    train_refs, val_refs : list of dict</span>
+<span class="sd">        Reference dicts from scan_elasticc_index.</span>
+<span class="sd">    use_rest_frame_time : bool</span>
+<span class="sd">    max_cached_shards : int</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    train_ds, val_ds : LazyElasticcDataset</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">flux_center_by_band</span><span class="p">,</span> <span class="n">flux_scale_by_band</span> <span class="o">=</span> <span class="n">compute_flux_norm_stats_from_refs</span><span class="p">(</span>
         <span class="n">train_refs</span>
     <span class="p">)</span>
@@ -1137,6 +1286,18 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">compute_z_bounds</span><span class="p">(</span>
     <span class="n">dataset</span><span class="p">:</span> <span class="n">MallornBaselineDataset</span><span class="p">,</span> <span class="n">p1</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.01</span><span class="p">,</span> <span class="n">p99</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.99</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute training-set redshift percentiles for normalization bounds.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    dataset : MallornBaselineDataset or LazyElasticcDataset</span>
+<span class="sd">    p1, p99 : float</span>
+<span class="sd">        Lower and upper quantile fractions.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    z_min, z_max : float</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="s2">&quot;z_values&quot;</span><span class="p">):</span>
         <span class="n">z_vals</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">dataset</span><span class="o">.</span><span class="n">z_values</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
         <span class="n">z_vals</span> <span class="o">=</span> <span class="n">z_vals</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">z_vals</span><span class="p">)]</span>
@@ -1204,6 +1365,22 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">collate_baseline_batch</span><span class="p">(</span>
     <span class="n">samples</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">training</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span> <span class="n">cfg</span><span class="p">:</span> <span class="n">BaselineCollateConfig</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaselineBatch</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Collate item dicts into a padded BaselineBatch with context/target split.</span>
+
+<span class="sd">    During training, the withheld fraction is sampled per object from</span>
+<span class="sd">    [cfg.mask_prob_min, cfg.mask_prob_max]; during validation it is fixed at</span>
+<span class="sd">    cfg.deterministic_val_fraction.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    samples : iterable of dict</span>
+<span class="sd">    training : bool</span>
+<span class="sd">    cfg : BaselineCollateConfig</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    BaselineBatch</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">samples</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">samples</span><span class="p">)</span>
     <span class="n">ctx_x</span><span class="p">,</span> <span class="n">ctx_y</span><span class="p">,</span> <span class="n">ctx_yerr</span><span class="p">,</span> <span class="n">ctx_band</span><span class="p">,</span> <span class="n">ctx_mask</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[]</span>
     <span class="n">tgt_x</span><span class="p">,</span> <span class="n">tgt_y</span><span class="p">,</span> <span class="n">tgt_yerr</span><span class="p">,</span> <span class="n">tgt_band</span><span class="p">,</span> <span class="n">tgt_mask</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[],</span> <span class="p">[]</span>
@@ -1302,6 +1479,12 @@
     <span class="n">training</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
     <span class="n">cfg</span><span class="p">:</span> <span class="n">BaselineCollateConfig</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">DataLoader</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Create a DataLoader configured with the baseline collate function.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    DataLoader</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">DataLoader</span><span class="p">(</span>
         <span class="n">dataset</span><span class="p">,</span>
         <span class="n">batch_size</span><span class="o">=</span><span class="n">batch_size</span><span class="p">,</span>
@@ -1321,6 +1504,21 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">make_full_context_batch</span><span class="p">(</span>
     <span class="n">items</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">z_min</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">z_max</span><span class="p">:</span> <span class="nb">float</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaselineBatch</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build a BaselineBatch in which every observation is used as context.</span>
+
+<span class="sd">    The target coordinates and bands mirror the context set, but the target</span>
+<span class="sd">    fluxes and uncertainties are placeholders because full-context evaluation</span>
+<span class="sd">    uses the classifier output.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    items : list of dict</span>
+<span class="sd">    z_min, z_max : float</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    BaselineBatch</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">context_x</span> <span class="o">=</span> <span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">as_tensor</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;t_norm&quot;</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">items</span><span class="p">]</span>
     <span class="n">context_y</span> <span class="o">=</span> <span class="p">[</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">as_tensor</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;flux_norm&quot;</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">items</span>
@@ -1400,6 +1598,25 @@
     <span class="n">min_context_points</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
     <span class="n">min_target_points</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaselineBatch</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build a batch using the earliest observations as context.</span>
+
+<span class="sd">    Target points are the remaining later observations. At</span>
+<span class="sd">    ``context_fraction=1.0`` the target set is empty and the batch is used for</span>
+<span class="sd">    classifier-only full-context prediction.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    items : list of dict</span>
+<span class="sd">    z_min, z_max : float</span>
+<span class="sd">    context_fraction : float</span>
+<span class="sd">        Fraction of temporally sorted observations used as context; in (0, 1].</span>
+<span class="sd">    min_context_points : int</span>
+<span class="sd">    min_target_points : int</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    BaselineBatch</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">context_fraction</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">context_fraction</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">context_fraction</span> <span class="o">&lt;=</span> <span class="mf">0.0</span> <span class="ow">or</span> <span class="n">context_fraction</span> <span class="o">&gt;</span> <span class="mf">1.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;context_fraction must be in (0, 1], got </span><span class="si">{</span><span class="n">context_fraction</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -1483,6 +1700,17 @@
 <div class="viewcode-block" id="ConvGNPBaseline">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.ConvGNPBaseline">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">ConvGNPBaseline</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;ConvGNP-style neural process for joint light-curve reconstruction and classification.</span>
+
+<span class="sd">    Architecture: point encoder -&gt; Gaussian set convolution -&gt; convolutional backbone</span>
+<span class="sd">    -&gt; decoder (reconstruction head) + classifier (class posterior). Optional global</span>
+<span class="sd">    latent path and host metadata branch.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    cfg : ConvGNPBaselineConfig</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="ConvGNPBaseline.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.baseline.ConvGNPBaseline.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg</span><span class="p">:</span> <span class="n">ConvGNPBaselineConfig</span><span class="p">):</span>
@@ -1732,6 +1960,13 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">evaluate_binary_predictions</span><span class="p">(</span>
     <span class="n">logits</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">labels</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute binary classification metrics from logits and integer labels.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    dict</span>
+<span class="sd">        Keys: f1@0.5, precision@0.5, recall@0.5, auroc, ap, best_f1, best_threshold.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">probs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sigmoid</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">labels</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">int</span><span class="p">)</span>
     <span class="n">pred05</span> <span class="o">=</span> <span class="p">(</span><span class="n">probs</span> <span class="o">&gt;=</span> <span class="mf">0.5</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">int</span><span class="p">)</span>
@@ -1767,6 +2002,13 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">evaluate_multiclass_predictions</span><span class="p">(</span>
     <span class="n">logits</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">labels</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute multiclass classification metrics from logits and integer labels.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    dict</span>
+<span class="sd">        Keys: macro_f1, weighted_f1, macro_auroc, top1_acc.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">probs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">labels</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">int</span><span class="p">)</span>
     <span class="n">preds</span> <span class="o">=</span> <span class="n">probs</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
@@ -1802,6 +2044,12 @@
     <span class="n">loss_cfg</span><span class="p">:</span> <span class="n">BaselineLossConfig</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one training epoch; return mean loss components per batch.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    dict mapping loss name to mean float value</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">model</span><span class="o">.</span><span class="n">train</span><span class="p">()</span>
     <span class="n">rows</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="n">nan_batches</span> <span class="o">=</span> <span class="mi">0</span>
@@ -1902,6 +2150,12 @@
     <span class="n">loss_cfg</span><span class="p">:</span> <span class="n">BaselineLossConfig</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run one validation epoch; return losses and classification metrics.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    dict mapping metric name to float</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
     <span class="n">loss_rows</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="n">logits</span><span class="p">,</span> <span class="n">labels</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
@@ -2120,6 +2374,24 @@
     <span class="n">meta_scale</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">extra_payload</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Save model weights, config, and training state to a .pt file.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    path : str or Path</span>
+<span class="sd">    model : ConvGNPBaseline</span>
+<span class="sd">    model_cfg : ConvGNPBaselineConfig</span>
+<span class="sd">    loss_cfg : BaselineLossConfig</span>
+<span class="sd">    epoch : int</span>
+<span class="sd">    metrics : dict</span>
+<span class="sd">    history : list of dict</span>
+<span class="sd">    z_min, z_max : float</span>
+<span class="sd">    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)</span>
+<span class="sd">    meta_center, meta_scale : ndarray or None</span>
+<span class="sd">        Stored in the checkpoint when provided.</span>
+<span class="sd">    extra_payload : dict, optional</span>
+<span class="sd">        Additional key-value pairs merged into the checkpoint dict.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">payload</span> <span class="o">=</span> <span class="p">{</span>
         <span class="s2">&quot;epoch&quot;</span><span class="p">:</span> <span class="n">epoch</span><span class="p">,</span>
         <span class="s2">&quot;model_state&quot;</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
@@ -2149,6 +2421,20 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">load_baseline_checkpoint</span><span class="p">(</span>
     <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cpu&quot;</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ConvGNPBaseline</span><span class="p">,</span> <span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load a ConvGNPBaseline and full checkpoint dict from a .pt file.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    path : str or Path</span>
+<span class="sd">    device : str or torch.device</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    model : ConvGNPBaseline</span>
+<span class="sd">        Loaded in eval mode.</span>
+<span class="sd">    ckpt : dict</span>
+<span class="sd">        Full checkpoint payload including normalization stats and training history.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">ckpt</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">map_location</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">model</span> <span class="o">=</span> <span class="n">ConvGNPBaseline</span><span class="p">(</span><span class="n">ConvGNPBaselineConfig</span><span class="p">(</span><span class="o">**</span><span class="n">ckpt</span><span class="p">[</span><span class="s2">&quot;model_cfg&quot;</span><span class="p">]))</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
     <span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ckpt</span><span class="p">[</span><span class="s2">&quot;model_state&quot;</span><span class="p">],</span> <span class="n">strict</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>

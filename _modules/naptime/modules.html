@@ -225,7 +225,9 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for naptime.modules</h1><div class="highlight"><pre>
-<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span></span><span class="sd">&quot;&quot;&quot;Neural network building blocks for the ConvGNP architecture.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
@@ -235,6 +237,14 @@
 <div class="viewcode-block" id="FourierTimeEmbedding">
 <a class="viewcode-back" href="../../api.html#naptime.modules.FourierTimeEmbedding">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">FourierTimeEmbedding</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Fourier feature time embedding mapping scalar times to sin/cos features.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    dim : int</span>
+<span class="sd">        Number of frequency components; output dimension is 2*dim.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="FourierTimeEmbedding.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.FourierTimeEmbedding.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
@@ -259,6 +269,8 @@
 <div class="viewcode-block" id="ResidualConvBlock">
 <a class="viewcode-back" href="../../api.html#naptime.modules.ResidualConvBlock">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">ResidualConvBlock</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Two-layer residual 1-D convolutional block with GroupNorm and GELU.&quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="ResidualConvBlock.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.ResidualConvBlock.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">channels</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">kernel_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span> <span class="n">dropout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">):</span>
@@ -285,6 +297,8 @@
 <div class="viewcode-block" id="ConvBackbone1D">
 <a class="viewcode-back" href="../../api.html#naptime.modules.ConvBackbone1D">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">ConvBackbone1D</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Stack of ResidualConvBlock layers forming the temporal convolutional backbone.&quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="ConvBackbone1D.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.ConvBackbone1D.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
@@ -312,6 +326,14 @@
 <div class="viewcode-block" id="GaussianSetConv1D">
 <a class="viewcode-back" href="../../api.html#naptime.modules.GaussianSetConv1D">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">GaussianSetConv1D</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Multi-scale Gaussian set convolution projecting irregular observations onto a grid.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    sigmas : tuple of float</span>
+<span class="sd">        Bandwidth for each projection scale; one scale per element.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="GaussianSetConv1D.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.GaussianSetConv1D.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sigmas</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="o">...</span><span class="p">]):</span>
@@ -348,6 +370,18 @@
 <div class="viewcode-block" id="GlobalLatentEncoder">
 <a class="viewcode-back" href="../../api.html#naptime.modules.GlobalLatentEncoder">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">GlobalLatentEncoder</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Encodes a context set into a Gaussian latent (mu, logvar) via mean+max pooling.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    in_dim : int</span>
+<span class="sd">        Feature dimension of each context point.</span>
+<span class="sd">    hidden_dim : int</span>
+<span class="sd">        Hidden dimension of the aggregation MLP.</span>
+<span class="sd">    latent_dim : int</span>
+<span class="sd">        Dimension of the latent variable z.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="GlobalLatentEncoder.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.GlobalLatentEncoder.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">in_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">latent_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
@@ -387,6 +421,18 @@
 <div class="viewcode-block" id="MLP">
 <a class="viewcode-back" href="../../api.html#naptime.modules.MLP">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">MLP</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Fully connected MLP with GELU activations and optional dropout.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    in_dim, hidden_dim, out_dim : int</span>
+<span class="sd">        Input, hidden, and output dimensions.</span>
+<span class="sd">    depth : int</span>
+<span class="sd">        Total number of layers including the output layer.</span>
+<span class="sd">    dropout : float</span>
+<span class="sd">        Dropout probability applied after each hidden activation.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
 <div class="viewcode-block" id="MLP.__init__">
 <a class="viewcode-back" href="../../api.html#naptime.modules.MLP.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>

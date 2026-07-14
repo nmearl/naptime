@@ -225,7 +225,9 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for naptime.elasticc</h1><div class="highlight"><pre>
-<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span>
+<span></span><span class="sd">&quot;&quot;&quot;ELAsTiCC2 taxonomy definitions, FITS indexing, and record extraction.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>
@@ -392,6 +394,19 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">get_elasticc_taxonomy</span><span class="p">(</span>
     <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return the taxonomy name, class names, and release-to-class mapping.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    name : str, optional</span>
+<span class="sd">        &quot;focused&quot; (7 classes) or &quot;families&quot; (15 classes); defaults to &quot;focused&quot;.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    taxonomy_name : str</span>
+<span class="sd">    class_names : list of str</span>
+<span class="sd">    release_to_class : dict</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">taxonomy_name</span> <span class="o">=</span> <span class="n">name</span> <span class="ow">or</span> <span class="s2">&quot;focused&quot;</span>
     <span class="k">if</span> <span class="n">taxonomy_name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ELASTICC_TAXONOMIES</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unknown ELAsTiCC taxonomy: </span><span class="si">{</span><span class="n">taxonomy_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -662,6 +677,29 @@
     <span class="n">max_shards_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_objects_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]],</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="nb">str</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Scan ELAsTiCC FITS shards and build a lightweight per-object reference index.</span>
+
+<span class="sd">    Each returned ref dict contains file paths, PHOT row bounds, and in-memory</span>
+<span class="sd">    metadata and redshift values, enabling photometry to be loaded lazily.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    data_dir : str or Path</span>
+<span class="sd">    taxonomy : str</span>
+<span class="sd">        &quot;focused&quot; or &quot;families&quot;.</span>
+<span class="sd">    redshift_source : str</span>
+<span class="sd">        &quot;final&quot;, &quot;photoz&quot;, or &quot;none&quot;.</span>
+<span class="sd">    metadata_fields : list of str, optional</span>
+<span class="sd">        HEAD table columns to read as metadata; defaults to META_FIELDS.</span>
+<span class="sd">    max_release_dirs, max_shards_per_release, max_objects_per_release : int, optional</span>
+<span class="sd">        Limits for partial loading; unlimited if None.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    refs : list of dict</span>
+<span class="sd">    class_names : list of str</span>
+<span class="sd">    taxonomy_name : str</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">data_dir</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">data_dir</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">redshift_source</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ELASTICC_REDSHIFT_SOURCES</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unknown ELAsTiCC redshift source: </span><span class="si">{</span><span class="n">redshift_source</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -773,6 +811,22 @@
         <span class="o">|</span> <span class="kc">None</span>
     <span class="p">)</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load photometry for one object from a ref dict produced by scan_elasticc_index.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    ref : dict</span>
+<span class="sd">        Reference dict with head_path, phot_path, phot_start, phot_end.</span>
+<span class="sd">    shard_cache : dict, optional</span>
+<span class="sd">        Mutable mapping from (head_path, phot_path) to loaded PHOT column arrays;</span>
+<span class="sd">        updated in place to share shard data across calls.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    dict</span>
+<span class="sd">        Keys: oid, t_raw, flux_raw, ferr_raw, band_idx, target, z,</span>
+<span class="sd">        meta_values, meta_mask, release_name.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">head_path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;head_path&quot;</span><span class="p">])</span>
     <span class="n">phot_path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">&quot;phot_path&quot;</span><span class="p">])</span>
     <span class="n">cache_key</span> <span class="o">=</span> <span class="p">(</span><span class="n">head_path</span><span class="p">,</span> <span class="n">phot_path</span><span class="p">)</span>
@@ -834,6 +888,25 @@
     <span class="n">max_shards_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_objects_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">],</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="nb">str</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load ELAsTiCC FITS shards into in-memory record dicts (eager loading).</span>
+
+<span class="sd">    Reads and caches HEAD/PHOT shard pairs using a pickle cache keyed by file</span>
+<span class="sd">    signatures. Prefer scan_elasticc_index + LazyElasticcDataset for large datasets.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    data_dir : str or Path</span>
+<span class="sd">    taxonomy : str</span>
+<span class="sd">    redshift_source : str</span>
+<span class="sd">    metadata_fields : list of str, optional</span>
+<span class="sd">    max_release_dirs, max_shards_per_release, max_objects_per_release : int, optional</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    records : list of dict</span>
+<span class="sd">    class_names : list of str</span>
+<span class="sd">    taxonomy_name : str</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">data_dir</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">data_dir</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">redshift_source</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ELASTICC_REDSHIFT_SOURCES</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unknown ELAsTiCC redshift source: </span><span class="si">{</span><span class="n">redshift_source</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -947,6 +1020,7 @@
     <span class="n">max_shards_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_objects_per_release</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Convenience wrapper for load_elasticc_records with the focused 7-class taxonomy.&quot;&quot;&quot;</span>
     <span class="n">records</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">load_elasticc_records</span><span class="p">(</span>
         <span class="n">data_dir</span><span class="p">,</span>
         <span class="n">taxonomy</span><span class="o">=</span><span class="s2">&quot;focused&quot;</span><span class="p">,</span>
