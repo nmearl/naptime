@@ -1,3 +1,5 @@
+"""ELAsTiCC2 taxonomy definitions, FITS indexing, and record extraction."""
+
 import hashlib
 import gc
 import os
@@ -163,6 +165,19 @@ PHOT_COLUMNS = ("BAND", "FLUXCAL", "FLUXCALERR", "MJD")
 def get_elasticc_taxonomy(
     name: str | None = None,
 ) -> tuple[str, list[str], dict[str, int]]:
+    """Return the taxonomy name, class names, and release-to-class mapping.
+
+    Parameters
+    ----------
+    name : str, optional
+        "focused" (7 classes) or "families" (15 classes); defaults to "focused".
+
+    Returns
+    -------
+    taxonomy_name : str
+    class_names : list of str
+    release_to_class : dict
+    """
     taxonomy_name = name or "focused"
     if taxonomy_name not in ELASTICC_TAXONOMIES:
         raise ValueError(f"unknown ELAsTiCC taxonomy: {taxonomy_name}")
@@ -430,6 +445,29 @@ def scan_elasticc_index(
     max_shards_per_release: int | None = None,
     max_objects_per_release: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], str]:
+    """Scan ELAsTiCC FITS shards and build a lightweight per-object reference index.
+
+    Each returned ref dict contains file paths, PHOT row bounds, and in-memory
+    metadata and redshift values, enabling photometry to be loaded lazily.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+    taxonomy : str
+        "focused" or "families".
+    redshift_source : str
+        "final", "photoz", or "none".
+    metadata_fields : list of str, optional
+        HEAD table columns to read as metadata; defaults to META_FIELDS.
+    max_release_dirs, max_shards_per_release, max_objects_per_release : int, optional
+        Limits for partial loading; unlimited if None.
+
+    Returns
+    -------
+    refs : list of dict
+    class_names : list of str
+    taxonomy_name : str
+    """
     data_dir = Path(data_dir)
     if redshift_source not in ELASTICC_REDSHIFT_SOURCES:
         raise ValueError(f"unknown ELAsTiCC redshift source: {redshift_source}")
@@ -538,6 +576,22 @@ def extract_elasticc_object_from_ref(
         | None
     ) = None,
 ) -> dict[str, Any]:
+    """Load photometry for one object from a ref dict produced by scan_elasticc_index.
+
+    Parameters
+    ----------
+    ref : dict
+        Reference dict with head_path, phot_path, phot_start, phot_end.
+    shard_cache : dict, optional
+        Mutable mapping from (head_path, phot_path) to loaded PHOT column arrays;
+        updated in place to share shard data across calls.
+
+    Returns
+    -------
+    dict
+        Keys: oid, t_raw, flux_raw, ferr_raw, band_idx, target, z,
+        meta_values, meta_mask, release_name.
+    """
     head_path = str(ref["head_path"])
     phot_path = str(ref["phot_path"])
     cache_key = (head_path, phot_path)
@@ -596,6 +650,25 @@ def load_elasticc_records(
     max_shards_per_release: int | None = None,
     max_objects_per_release: int | None = None,
 ) -> tuple[list[dict], list[str], str]:
+    """Load ELAsTiCC FITS shards into in-memory record dicts (eager loading).
+
+    Reads and caches HEAD/PHOT shard pairs using a pickle cache keyed by file
+    signatures. Prefer scan_elasticc_index + LazyElasticcDataset for large datasets.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+    taxonomy : str
+    redshift_source : str
+    metadata_fields : list of str, optional
+    max_release_dirs, max_shards_per_release, max_objects_per_release : int, optional
+
+    Returns
+    -------
+    records : list of dict
+    class_names : list of str
+    taxonomy_name : str
+    """
     data_dir = Path(data_dir)
     if redshift_source not in ELASTICC_REDSHIFT_SOURCES:
         raise ValueError(f"unknown ELAsTiCC redshift source: {redshift_source}")
@@ -706,6 +779,7 @@ def load_elasticc_focus_records(
     max_shards_per_release: int | None = None,
     max_objects_per_release: int | None = None,
 ) -> list[dict]:
+    """Convenience wrapper for load_elasticc_records with the focused 7-class taxonomy."""
     records, _, _ = load_elasticc_records(
         data_dir,
         taxonomy="focused",

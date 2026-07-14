@@ -1,3 +1,5 @@
+"""Data loading and preprocessing utilities for MALLORN light curves."""
+
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,22 @@ EBV_COEFFS = {
 
 
 def load_all_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load MALLORN training light curves and object log from disk.
+
+    Supports both split_* subdirectory and flat CSV layouts.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+        Root directory of the MALLORN dataset.
+
+    Returns
+    -------
+    lc : pd.DataFrame
+        Light curve table with columns mjd, flux, flux_err, band, object_id.
+    log : pd.DataFrame
+        Object-level table with object_id, Z, EBV, target, SpecType.
+    """
     data_dir = Path(data_dir)
     split_dirs = sorted(data_dir.glob("split_*"))
     lc_parts = [
@@ -59,6 +77,17 @@ def load_all_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def load_test_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load MALLORN test light curves and object log from disk.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+
+    Returns
+    -------
+    lc : pd.DataFrame
+    log : pd.DataFrame
+    """
     data_dir = Path(data_dir)
     split_dirs = sorted(data_dir.glob("split_*"))
     lc_parts = [
@@ -96,6 +125,22 @@ def load_test_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 def apply_ebv_correction(
     lc: pd.DataFrame, log: pd.DataFrame, ebv_coeffs: dict[str, float] | None = None
 ) -> pd.DataFrame:
+    """Apply per-band Milky Way extinction correction to flux and flux_err.
+
+    Parameters
+    ----------
+    lc : pd.DataFrame
+        Light curve table with object_id and band columns.
+    log : pd.DataFrame
+        Object log with EBV column.
+    ebv_coeffs : dict, optional
+        Per-band R_lambda values; defaults to EBV_COEFFS.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of lc with corrected flux and flux_err.
+    """
     ebv_coeffs = EBV_COEFFS if ebv_coeffs is None else ebv_coeffs
     ebv_map = (
         dict(zip(log["object_id"], log["EBV"].fillna(0.0)))
@@ -115,6 +160,25 @@ def apply_ebv_correction(
 def cap_observations(
     obj: pd.DataFrame, max_obs: int, snr_threshold: float
 ) -> pd.DataFrame:
+    """Subsample one object's light curve to at most max_obs points.
+
+    High-SNR detections are retained preferentially; remaining budget is filled
+    with uniformly spaced low-SNR observations.
+
+    Parameters
+    ----------
+    obj : pd.DataFrame
+        Single-object light curve.
+    max_obs : int
+        Maximum number of observations to keep.
+    snr_threshold : float
+        SNR threshold separating high- from low-priority observations.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subsampled, mjd-sorted light curve.
+    """
     if len(obj) <= max_obs:
         return obj.sort_values("mjd").reset_index(drop=True)
 
@@ -137,6 +201,17 @@ def cap_observations(
 
 
 def valid_object_ids(lc: pd.DataFrame, min_obs: int = 3) -> list[str]:
+    """Return object IDs with at least min_obs observations in lc.
+
+    Parameters
+    ----------
+    lc : pd.DataFrame
+    min_obs : int
+
+    Returns
+    -------
+    list of str
+    """
     counts = lc.groupby("object_id").size()
     return counts[counts >= min_obs].index.tolist()
 
@@ -148,6 +223,21 @@ def preprocess_mallorn_training_tables(
     max_obs: int = 200,
     keep_all_snr_gt: float = 5.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Apply EBV correction, cap long light curves, and filter usable objects.
+
+    Parameters
+    ----------
+    lc : pd.DataFrame
+    log : pd.DataFrame
+    max_obs : int
+        Maximum observations per object; longer light curves are subsampled.
+    keep_all_snr_gt : float
+        SNR threshold for preferential retention during subsampling.
+
+    Returns
+    -------
+    lc, log : pd.DataFrame
+    """
     lc = apply_ebv_correction(lc, log)
     lc_ids = set(lc["object_id"].unique())
     log = log[log["object_id"].isin(lc_ids)].reset_index(drop=True)
@@ -173,6 +263,20 @@ def preprocess_mallorn_training_tables(
 def compute_flux_norm_stats(
     lc: pd.DataFrame, object_ids: list[str] | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-band robust flux center (median) and scale (1.4826 * MAD).
+
+    Parameters
+    ----------
+    lc : pd.DataFrame
+        Light curve table with band and flux columns.
+    object_ids : list of str, optional
+        Restrict computation to these objects; uses all if None.
+
+    Returns
+    -------
+    centers : ndarray, shape (6,)
+    scales : ndarray, shape (6,)
+    """
     if object_ids is not None:
         lc = lc[lc["object_id"].isin(object_ids)]
     centers = np.zeros(len(BANDS), dtype=np.float32)
@@ -199,6 +303,18 @@ def compute_flux_norm_stats(
 
 
 def normalize_redshift(z_raw: torch.Tensor, z_min: float, z_max: float) -> torch.Tensor:
+    """Normalize redshift to [0, 1]; non-finite values map to 0.5.
+
+    Parameters
+    ----------
+    z_raw : Tensor
+    z_min, z_max : float
+        Training-set redshift bounds.
+
+    Returns
+    -------
+    Tensor
+    """
     span = max(z_max - z_min, 1e-6)
     z_norm = (z_raw.clone() - z_min) / span
     z_norm = z_norm.clamp(0.0, 1.0)

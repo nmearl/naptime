@@ -1,3 +1,5 @@
+"""FastAPI inference service exposing /classify and /health endpoints."""
+
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass

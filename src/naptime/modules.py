@@ -1,3 +1,5 @@
+"""Neural network building blocks for the ConvGNP architecture."""
+
 import math
 
 import torch
@@ -6,6 +8,14 @@ import torch.nn.functional as F
 
 
 class FourierTimeEmbedding(nn.Module):
+    """Fourier feature time embedding mapping scalar times to sin/cos features.
+
+    Parameters
+    ----------
+    dim : int
+        Number of frequency components; output dimension is 2*dim.
+    """
+
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
@@ -21,6 +31,8 @@ class FourierTimeEmbedding(nn.Module):
 
 
 class ResidualConvBlock(nn.Module):
+    """Two-layer residual 1-D convolutional block with GroupNorm and GELU."""
+
     def __init__(self, channels: int, kernel_size: int = 5, dropout: float = 0.0):
         super().__init__()
         pad = kernel_size // 2
@@ -38,6 +50,8 @@ class ResidualConvBlock(nn.Module):
 
 
 class ConvBackbone1D(nn.Module):
+    """Stack of ResidualConvBlock layers forming the temporal convolutional backbone."""
+
     def __init__(
         self, channels: int, layers: int, kernel_size: int = 5, dropout: float = 0.0
     ):
@@ -56,6 +70,14 @@ class ConvBackbone1D(nn.Module):
 
 
 class GaussianSetConv1D(nn.Module):
+    """Multi-scale Gaussian set convolution projecting irregular observations onto a grid.
+
+    Parameters
+    ----------
+    sigmas : tuple of float
+        Bandwidth for each projection scale; one scale per element.
+    """
+
     def __init__(self, sigmas: tuple[float, ...]):
         super().__init__()
         self.sigmas = sigmas
@@ -83,6 +105,18 @@ class GaussianSetConv1D(nn.Module):
 
 
 class GlobalLatentEncoder(nn.Module):
+    """Encodes a context set into a Gaussian latent (mu, logvar) via mean+max pooling.
+
+    Parameters
+    ----------
+    in_dim : int
+        Feature dimension of each context point.
+    hidden_dim : int
+        Hidden dimension of the aggregation MLP.
+    latent_dim : int
+        Dimension of the latent variable z.
+    """
+
     def __init__(self, in_dim: int, hidden_dim: int, latent_dim: int):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -113,6 +147,18 @@ class GlobalLatentEncoder(nn.Module):
 
 
 class MLP(nn.Module):
+    """Fully connected MLP with GELU activations and optional dropout.
+
+    Parameters
+    ----------
+    in_dim, hidden_dim, out_dim : int
+        Input, hidden, and output dimensions.
+    depth : int
+        Total number of layers including the output layer.
+    dropout : float
+        Dropout probability applied after each hidden activation.
+    """
+
     def __init__(
         self,
         in_dim: int,

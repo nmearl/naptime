@@ -1,3 +1,5 @@
+"""ConvGNP baseline: datasets, collation, model, training, and evaluation."""
+
 from dataclasses import asdict, dataclass
 import gc
 import hashlib
@@ -46,6 +48,8 @@ MAX_FERR_NORM = 200.0
 
 @dataclass(slots=True)
 class BaselineBatch:
+    """Padded, collated batch of light curves ready for model forward passes."""
+
     context_x: torch.Tensor
     context_y: torch.Tensor
     context_yerr: torch.Tensor
@@ -88,6 +92,23 @@ class BaselineBatch:
 
 @dataclass(slots=True)
 class BaselineCollateConfig:
+    """Configuration for ``collate_baseline_batch`` context/target splits.
+
+    Parameters
+    ----------
+    seed : int
+        Base RNG seed for deterministic per-object splits.
+    z_min, z_max : float
+        Redshift bounds for normalization.
+    mask_prob_min, mask_prob_max : float
+        Fraction of observations withheld as targets during training;
+        drawn uniformly from [min, max] per object.
+    min_context_points : int
+        Minimum number of context observations per object.
+    deterministic_val_fraction : float
+        Fixed context fraction used during validation.
+    """
+
     seed: int
     z_min: float
     z_max: float
@@ -102,6 +123,12 @@ class BaselineCollateConfig:
 
 @dataclass(slots=True)
 class ConvGNPBaselineConfig:
+    """Hyperparameter configuration for ConvGNPBaseline.
+
+    Covers grid resolution, convolutional depth and width, set-convolution
+    bandwidths, and flags for the latent and metadata paths.
+    """
+
     num_bands: int = 6
     grid_size: int = 256
     grid_min: float = 0.0
@@ -132,6 +159,20 @@ class ConvGNPBaselineConfig:
 
 @dataclass(slots=True)
 class ConvGNPBaselineOutput:
+    """Output of a ConvGNPBaseline forward pass.
+
+    Attributes
+    ----------
+    pred_mean, pred_var : Tensor, shape (B, T)
+        Predictive mean and variance for target flux observations.
+    class_logits : Tensor, shape (B,) or (B, C)
+        Classification logits; 1-D for binary, 2-D for multiclass.
+    grid_features : Tensor, shape (B, C, G)
+        Convolutional backbone activations on the temporal grid.
+    latent_mu, latent_logvar : Tensor or None, shape (B, L)
+        Posterior parameters of the global latent variable.
+    """
+
     pred_mean: torch.Tensor
     pred_var: torch.Tensor
     class_logits: torch.Tensor
@@ -142,6 +183,8 @@ class ConvGNPBaselineOutput:
 
 @dataclass(slots=True)
 class BaselineLossConfig:
+    """Loss weighting and KL annealing configuration."""
+
     lambda_recon: float = 1.0
     lambda_cls: float = 1.0
     pos_weight: float | None = None
@@ -154,6 +197,8 @@ class BaselineLossConfig:
 
 @dataclass(slots=True)
 class BaselineLosses:
+    """Individual loss terms from a forward pass: total, reconstruction, classification, KL."""
+
     total: torch.Tensor
     recon: torch.Tensor
     cls: torch.Tensor
@@ -197,6 +242,23 @@ def build_mallorn_task_log(log, *, num_classes: int = 1):
 
 
 class MallornBaselineDataset(Dataset):
+    """PyTorch Dataset for MALLORN multiband photometry.
+
+    Normalizes flux and time at construction time. Items are dicts compatible
+    with ``collate_baseline_batch`` and use ``task_target`` when that column is
+    present in the object log.
+
+    Parameters
+    ----------
+    object_ids : list of str
+    lc : pd.DataFrame
+    log : pd.DataFrame
+    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,), optional
+        Per-band normalization stats; defaults to zero-center / unit-scale.
+    use_rest_frame_time : bool
+        Divide times by (1 + z) before span normalization.
+    """
+
     def __init__(
         self,
         object_ids: list[str],
@@ -283,6 +345,18 @@ class MallornBaselineDataset(Dataset):
 
 
 class PrecomputedBaselineDataset(Dataset):
+    """PyTorch Dataset wrapping in-memory ELAsTiCC record dicts.
+
+    Parameters
+    ----------
+    records : list of dict
+        Record dicts from load_elasticc_records.
+    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)
+    meta_center, meta_scale : ndarray or None
+        Per-field metadata normalization; skipped if None.
+    use_rest_frame_time : bool
+    """
+
     def __init__(
         self,
         records: list[dict],
@@ -364,6 +438,22 @@ class PrecomputedBaselineDataset(Dataset):
 
 
 class LazyElasticcDataset(Dataset):
+    """PyTorch Dataset that reads ELAsTiCC FITS shards on demand.
+
+    Holds only an object reference index in memory; photometry is loaded from
+    disk at __getitem__ time via an LRU shard cache bounded by max_cached_shards.
+
+    Parameters
+    ----------
+    refs : list of dict
+        Reference dicts from scan_elasticc_index.
+    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)
+    meta_center, meta_scale : ndarray or None
+    use_rest_frame_time : bool
+    max_cached_shards : int
+        Number of FITS shard pairs to hold in memory simultaneously.
+    """
+
     def __init__(
         self,
         refs: list[dict],
@@ -487,6 +577,26 @@ def prepare_mallorn_baseline_datasets(
     use_rest_frame_time: bool = False,
     num_classes: int = 1,
 ):
+    """Load MALLORN data from disk and build stratified train/val datasets.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+    seed : int
+    val_frac : float
+    max_obs : int
+    keep_all_snr_gt : float
+    use_rest_frame_time : bool
+    num_classes : int
+        Values <= 1 use the dataset target column directly. Larger values use
+        the grouped MALLORN spectroscopic taxonomy.
+
+    Returns
+    -------
+    lc, log : pd.DataFrame
+    train_ds, val_ds : MallornBaselineDataset
+    train_ids, val_ids : list of str
+    """
     lc, log = load_all_data(data_dir)
     lc, log = preprocess_mallorn_training_tables(
         lc, log, max_obs=max_obs, keep_all_snr_gt=keep_all_snr_gt
@@ -567,6 +677,12 @@ def build_mallorn_baseline_datasets(
 def compute_flux_norm_stats_from_records(
     records: list[dict],
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-band robust flux center and scale from in-memory record dicts.
+
+    Returns
+    -------
+    centers, scales : ndarray, shape (6,)
+    """
     centers = np.zeros(len(BANDS), dtype=np.float32)
     scales = np.ones(len(BANDS), dtype=np.float32)
     for i in range(len(BANDS)):
@@ -599,6 +715,17 @@ def compute_flux_norm_stats_from_records(
 def compute_flux_norm_stats_from_refs(
     refs: list[dict],
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-band robust flux center and scale by streaming through FITS shards.
+
+    Makes one pass per band over the reference set and loads only the shards
+    needed for the current object references. This has higher I/O cost than
+    ``compute_flux_norm_stats_from_records`` but avoids keeping all photometry
+    records in memory.
+
+    Returns
+    -------
+    centers, scales : ndarray, shape (6,)
+    """
     centers = np.zeros(len(BANDS), dtype=np.float32)
     scales = np.ones(len(BANDS), dtype=np.float32)
     shard_cache: dict[
@@ -639,6 +766,12 @@ def compute_flux_norm_stats_from_refs(
 def compute_meta_norm_stats_from_records(
     records: list[dict],
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-field robust metadata center and scale from in-memory records.
+
+    Returns
+    -------
+    centers, scales : ndarray, shape (n_fields,)
+    """
     all_values = [
         np.asarray(
             r.get("meta_values", np.zeros(0, dtype=np.float32)), dtype=np.float32
@@ -673,6 +806,14 @@ def compute_meta_norm_stats_from_records(
 def compute_meta_norm_stats_from_refs(
     refs: list[dict],
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-field robust metadata center and scale from lazy ref dicts.
+
+    Reads meta_values from the in-memory ref index (no PHOT shard I/O).
+
+    Returns
+    -------
+    centers, scales : ndarray, shape (n_fields,)
+    """
     all_values = [
         np.asarray(
             ref.get("meta_values", np.zeros(0, dtype=np.float32)), dtype=np.float32
@@ -740,6 +881,19 @@ def build_lazy_elasticc_datasets(
     use_rest_frame_time: bool = False,
     max_cached_shards: int = 1,
 ):
+    """Build lazy train and val ELAsTiCC datasets with normalization from train refs.
+
+    Parameters
+    ----------
+    train_refs, val_refs : list of dict
+        Reference dicts from scan_elasticc_index.
+    use_rest_frame_time : bool
+    max_cached_shards : int
+
+    Returns
+    -------
+    train_ds, val_ds : LazyElasticcDataset
+    """
     flux_center_by_band, flux_scale_by_band = compute_flux_norm_stats_from_refs(
         train_refs
     )
@@ -830,6 +984,18 @@ def prepare_mallorn_baseline_test_dataset(
 def compute_z_bounds(
     dataset: MallornBaselineDataset, p1: float = 0.01, p99: float = 0.99
 ) -> tuple[float, float]:
+    """Compute training-set redshift percentiles for normalization bounds.
+
+    Parameters
+    ----------
+    dataset : MallornBaselineDataset or LazyElasticcDataset
+    p1, p99 : float
+        Lower and upper quantile fractions.
+
+    Returns
+    -------
+    z_min, z_max : float
+    """
     if hasattr(dataset, "z_values"):
         z_vals = np.asarray(dataset.z_values, dtype=np.float32)
         z_vals = z_vals[np.isfinite(z_vals)]
@@ -891,6 +1057,22 @@ def _split_indices(
 def collate_baseline_batch(
     samples: Iterable[dict], *, training: bool, cfg: BaselineCollateConfig
 ) -> BaselineBatch:
+    """Collate item dicts into a padded BaselineBatch with context/target split.
+
+    During training, the withheld fraction is sampled per object from
+    [cfg.mask_prob_min, cfg.mask_prob_max]; during validation it is fixed at
+    cfg.deterministic_val_fraction.
+
+    Parameters
+    ----------
+    samples : iterable of dict
+    training : bool
+    cfg : BaselineCollateConfig
+
+    Returns
+    -------
+    BaselineBatch
+    """
     samples = list(samples)
     ctx_x, ctx_y, ctx_yerr, ctx_band, ctx_mask = [], [], [], [], []
     tgt_x, tgt_y, tgt_yerr, tgt_band, tgt_mask = [], [], [], [], []
@@ -986,6 +1168,12 @@ def make_baseline_loader(
     training: bool,
     cfg: BaselineCollateConfig,
 ) -> DataLoader:
+    """Create a DataLoader configured with the baseline collate function.
+
+    Returns
+    -------
+    DataLoader
+    """
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -1002,6 +1190,21 @@ def make_baseline_loader(
 def make_full_context_batch(
     items: list[dict], *, z_min: float, z_max: float
 ) -> BaselineBatch:
+    """Build a BaselineBatch in which every observation is used as context.
+
+    The target coordinates and bands mirror the context set, but the target
+    fluxes and uncertainties are placeholders because full-context evaluation
+    uses the classifier output.
+
+    Parameters
+    ----------
+    items : list of dict
+    z_min, z_max : float
+
+    Returns
+    -------
+    BaselineBatch
+    """
     context_x = [torch.as_tensor(item["t_norm"], dtype=torch.float32) for item in items]
     context_y = [
         torch.as_tensor(item["flux_norm"], dtype=torch.float32) for item in items
@@ -1078,6 +1281,25 @@ def make_prefix_context_batch(
     min_context_points: int = 3,
     min_target_points: int = 1,
 ) -> BaselineBatch:
+    """Build a batch using the earliest observations as context.
+
+    Target points are the remaining later observations. At
+    ``context_fraction=1.0`` the target set is empty and the batch is used for
+    classifier-only full-context prediction.
+
+    Parameters
+    ----------
+    items : list of dict
+    z_min, z_max : float
+    context_fraction : float
+        Fraction of temporally sorted observations used as context; in (0, 1].
+    min_context_points : int
+    min_target_points : int
+
+    Returns
+    -------
+    BaselineBatch
+    """
     context_fraction = float(context_fraction)
     if context_fraction <= 0.0 or context_fraction > 1.0:
         raise ValueError(f"context_fraction must be in (0, 1], got {context_fraction}")
@@ -1158,6 +1380,17 @@ def make_prefix_context_batch(
 
 
 class ConvGNPBaseline(nn.Module):
+    """ConvGNP-style neural process for joint light-curve reconstruction and classification.
+
+    Architecture: point encoder -> Gaussian set convolution -> convolutional backbone
+    -> decoder (reconstruction head) + classifier (class posterior). Optional global
+    latent path and host metadata branch.
+
+    Parameters
+    ----------
+    cfg : ConvGNPBaselineConfig
+    """
+
     def __init__(self, cfg: ConvGNPBaselineConfig):
         super().__init__()
         self.cfg = cfg
@@ -1395,6 +1628,13 @@ def baseline_loss(
 def evaluate_binary_predictions(
     logits: torch.Tensor, labels: torch.Tensor
 ) -> dict[str, float]:
+    """Compute binary classification metrics from logits and integer labels.
+
+    Returns
+    -------
+    dict
+        Keys: f1@0.5, precision@0.5, recall@0.5, auroc, ap, best_f1, best_threshold.
+    """
     probs = torch.sigmoid(logits).detach().cpu().numpy()
     y = labels.detach().cpu().numpy().astype(int)
     pred05 = (probs >= 0.5).astype(int)
@@ -1427,6 +1667,13 @@ def evaluate_binary_predictions(
 def evaluate_multiclass_predictions(
     logits: torch.Tensor, labels: torch.Tensor
 ) -> dict[str, float]:
+    """Compute multiclass classification metrics from logits and integer labels.
+
+    Returns
+    -------
+    dict
+        Keys: macro_f1, weighted_f1, macro_auroc, top1_acc.
+    """
     probs = torch.softmax(logits, dim=-1).detach().cpu().numpy()
     y = labels.detach().cpu().numpy().astype(int)
     preds = probs.argmax(axis=-1)
@@ -1459,6 +1706,12 @@ def fit_epoch(
     loss_cfg: BaselineLossConfig,
     device: str | torch.device,
 ) -> dict[str, float]:
+    """Run one training epoch; return mean loss components per batch.
+
+    Returns
+    -------
+    dict mapping loss name to mean float value
+    """
     model.train()
     rows: list[dict[str, float]] = []
     nan_batches = 0
@@ -1556,6 +1809,12 @@ def evaluate_epoch(
     loss_cfg: BaselineLossConfig,
     device: str | torch.device,
 ) -> dict[str, float]:
+    """Run one validation epoch; return losses and classification metrics.
+
+    Returns
+    -------
+    dict mapping metric name to float
+    """
     model.eval()
     loss_rows: list[dict[str, float]] = []
     logits, labels = [], []
@@ -1765,6 +2024,24 @@ def save_baseline_checkpoint(
     meta_scale: np.ndarray | None = None,
     extra_payload: dict | None = None,
 ) -> None:
+    """Save model weights, config, and training state to a .pt file.
+
+    Parameters
+    ----------
+    path : str or Path
+    model : ConvGNPBaseline
+    model_cfg : ConvGNPBaselineConfig
+    loss_cfg : BaselineLossConfig
+    epoch : int
+    metrics : dict
+    history : list of dict
+    z_min, z_max : float
+    flux_center_by_band, flux_scale_by_band : ndarray, shape (6,)
+    meta_center, meta_scale : ndarray or None
+        Stored in the checkpoint when provided.
+    extra_payload : dict, optional
+        Additional key-value pairs merged into the checkpoint dict.
+    """
     payload = {
         "epoch": epoch,
         "model_state": model.state_dict(),
@@ -1791,6 +2068,20 @@ def save_baseline_checkpoint(
 def load_baseline_checkpoint(
     path: str | Path, device: str | torch.device = "cpu"
 ) -> tuple[ConvGNPBaseline, dict]:
+    """Load a ConvGNPBaseline and full checkpoint dict from a .pt file.
+
+    Parameters
+    ----------
+    path : str or Path
+    device : str or torch.device
+
+    Returns
+    -------
+    model : ConvGNPBaseline
+        Loaded in eval mode.
+    ckpt : dict
+        Full checkpoint payload including normalization stats and training history.
+    """
     ckpt = torch.load(path, map_location=device)
     model = ConvGNPBaseline(ConvGNPBaselineConfig(**ckpt["model_cfg"])).to(device)
     model.load_state_dict(ckpt["model_state"], strict=False)
