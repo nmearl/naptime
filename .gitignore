@@ -17,3 +17,5 @@ wheels/
 docs/_build/
 output/
 scripts/
+*.sqlite
+*.sqlite3

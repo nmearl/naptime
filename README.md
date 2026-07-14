@@ -130,18 +130,6 @@ Environment variables:
 | `NAPTIME_CHECKPOINT` | `/models/latest.pt` | Path to checkpoint file |
 | `NAPTIME_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps` |
 
-## Checkpoints
-
-Training commands write checkpoints under the selected output directory. The
-primary checkpoint is:
-
-```text
-best_primary_checkpoint.pt
-```
-
-Checkpoints are not stored in git. For reproducible releases, attach them as
-GitHub Release assets or store them in another artifact repository.
-
 ## ELAsTiCC2 Training
 
 Use lazy loading for full ELAsTiCC2 runs to avoid loading all photometry into
