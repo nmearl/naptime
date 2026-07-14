@@ -89,6 +89,23 @@ naptime --help
 If you are working directly from a source checkout without activating the
 environment, prefix commands with `uv run`.
 
+## Model Checkpoints
+
+Latest trained checkpoints are distributed as GitHub Release assets:
+
+https://github.com/nmearl/naptime/releases/latest
+
+Current checkpoint assets:
+
+| Asset | Benchmark | Classes | Metadata | Redshift |
+|---|---|---:|---|---|
+| `naptime-elasticc2-families-photoz-metadata.pt` | ELAsTiCC2 | 15 family-level classes | Host metadata enabled | Host photo-z |
+| `naptime-elasticc2-families-photoz-no-metadata.pt` | ELAsTiCC2 | 15 family-level classes | Photometry only | Host photo-z |
+| `naptime-mallorn-multiclass.pt` | MALLORN | 6 grouped classes | Photometry only | Object redshift |
+
+Pass a downloaded checkpoint to evaluation commands with `--checkpoint`. For the
+inference service, set `NAPTIME_CHECKPOINT` to the local checkpoint path.
+
 ## Inference Service
 
 NAPTIME includes a stateless FastAPI service for direct model inference. It
