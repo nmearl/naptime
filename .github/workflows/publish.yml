@@ -69,8 +69,12 @@ jobs:
           VERSION=${{ needs.check-version.outputs.new-version }}
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists"
+          else
+            git tag "v$VERSION"
+            git push origin "v$VERSION"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

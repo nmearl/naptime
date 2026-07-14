@@ -161,16 +161,11 @@ class ConvGNPBaselineConfig:
 class ConvGNPBaselineOutput:
     """Output of a ConvGNPBaseline forward pass.
 
-    Attributes
-    ----------
-    pred_mean, pred_var : Tensor, shape (B, T)
-        Predictive mean and variance for target flux observations.
-    class_logits : Tensor, shape (B,) or (B, C)
-        Classification logits; 1-D for binary, 2-D for multiclass.
-    grid_features : Tensor, shape (B, C, G)
-        Convolutional backbone activations on the temporal grid.
-    latent_mu, latent_logvar : Tensor or None, shape (B, L)
-        Posterior parameters of the global latent variable.
+    ``pred_mean`` and ``pred_var`` contain target-point flux predictions.
+    ``class_logits`` is one-dimensional for binary models and two-dimensional
+    for multiclass models. ``grid_features`` contains the temporal-grid
+    backbone activations. ``latent_mu`` and ``latent_logvar`` are present when
+    the global latent path is enabled.
     """
 
     pred_mean: torch.Tensor
